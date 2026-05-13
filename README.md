@@ -55,6 +55,8 @@ Feito nesta fase:
 - Leitura nativa de `GET /health` e `POST /desconectar` em `127.0.0.1:47851`, evitando problema de CORS da WebView.
 - Logs recentes lidos de `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
 - UI com estados: parado, iniciando, aguardando QR, conectado, reconectando, desconectado, erro e agente externo.
+- QR Code real do `whatsapp-web.js` lido do servidor local do agente, com expiracao curta e renderizacao dentro do card de pareamento.
+- Estados especificos de pareamento: aguardando QR, QR disponivel, autenticado, conectado e sessao expirada.
 
 O `@tauri-apps/plugin-shell` ainda nao foi instalado nesta fase porque o agente atual continua sendo um app Node em pasta irma do repo. Para usar sidecar corretamente, o binario precisa estar declarado no bundle/capabilities do Tauri e empacotado junto do instalador. A abstracao criada em `src/agent` deixa essa troca preparada.
 
@@ -110,5 +112,5 @@ O instalador Tauri/NSIS ficara em `src-tauri/target/release/bundle/nsis` quando 
 - `whatsapp-web.js` depende de Puppeteer/Chromium e pode aumentar o tamanho do app.
 - Antiviruses podem continuar sensiveis ate haver assinatura digital.
 - Sidecar Node precisa ser empacotado com cuidado para nao depender de terminal ou PATH do usuario.
-- QR Code real hoje fica no backend/painel Web, nao no servidor local. Para QR nativo no Connect, o agente precisa expor o QR localmente ou o Connect precisa consultar o backend autenticado.
+- QR Code real fica somente no agente local em memoria e expira automaticamente; o Connect consulta `GET /health` e tambem pode consultar `GET /qr`.
 - Desconectar e uma acao real quando o agente atual estiver rodando.

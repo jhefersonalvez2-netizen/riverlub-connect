@@ -2,9 +2,12 @@ export const AGENT_STATUS = {
   STOPPED: "STOPPED",
   STARTING: "STARTING",
   WAITING_QR: "WAITING_QR",
+  QR_READY: "QR_READY",
+  AUTHENTICATED: "AUTHENTICATED",
   CONNECTED: "CONNECTED",
   RECONNECTING: "RECONNECTING",
   DISCONNECTED: "DISCONNECTED",
+  SESSION_EXPIRED: "SESSION_EXPIRED",
   ERROR: "ERROR",
   EXTERNAL: "EXTERNAL",
 };
@@ -23,7 +26,17 @@ export const STATUS_META = {
   [AGENT_STATUS.WAITING_QR]: {
     label: "Aguardando QR Code",
     tone: "warning",
-    detail: "O WhatsApp precisa ler o QR Code para concluir o pareamento.",
+    detail: "O WhatsApp ainda esta preparando um QR Code de pareamento.",
+  },
+  [AGENT_STATUS.QR_READY]: {
+    label: "QR Code disponivel",
+    tone: "warning",
+    detail: "Abra o WhatsApp no celular e leia o QR Code exibido no Connect.",
+  },
+  [AGENT_STATUS.AUTHENTICATED]: {
+    label: "Sessao autenticada",
+    tone: "info",
+    detail: "QR lido com sucesso. O WhatsApp Web esta sincronizando a sessao.",
   },
   [AGENT_STATUS.CONNECTED]: {
     label: "WhatsApp conectado",
@@ -39,6 +52,11 @@ export const STATUS_META = {
     label: "Sessao desconectada",
     tone: "warning",
     detail: "O agente respondeu, mas o WhatsApp nao esta conectado.",
+  },
+  [AGENT_STATUS.SESSION_EXPIRED]: {
+    label: "Sessao expirada",
+    tone: "danger",
+    detail: "A sessao local foi perdida ou desconectada. Reinicie o agente para gerar novo QR.",
   },
   [AGENT_STATUS.ERROR]: {
     label: "Erro",
@@ -94,13 +112,34 @@ export function getAgentStatus({ health, processState }) {
   const portOpen = Boolean(processState?.portOpen);
   const managedRunning = Boolean(processState?.managedRunning);
   const externalRunning = Boolean(processState?.externalRunning);
+  const connected = Boolean(health?.conectado || health?.connected);
+  const authenticated = Boolean(health?.authenticated);
+  const waitingQr = Boolean(health?.waiting_qr || health?.waitingQr);
+  const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const sessionExpired = Boolean(health?.session_expired || health?.sessionExpired);
+
+  if (connected) {
+    return AGENT_STATUS.CONNECTED;
+  }
+
+  if (sessionExpired) {
+    return AGENT_STATUS.SESSION_EXPIRED;
+  }
 
   if (health?.erro_ultimo) {
     return AGENT_STATUS.ERROR;
   }
 
-  if (health?.conectado) {
-    return AGENT_STATUS.CONNECTED;
+  if (authenticated) {
+    return AGENT_STATUS.AUTHENTICATED;
+  }
+
+  if (waitingQr && qrDataUrl) {
+    return AGENT_STATUS.QR_READY;
+  }
+
+  if (waitingQr) {
+    return AGENT_STATUS.WAITING_QR;
   }
 
   if (health?.inicializando) {

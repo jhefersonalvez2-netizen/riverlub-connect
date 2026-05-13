@@ -381,6 +381,43 @@ h2 {
   margin-bottom: 0;
 }
 
+.qr-state-pill {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.qr-state-pill.neutral {
+  color: #334155;
+  background: #e8edf4;
+}
+
+.qr-state-pill.info {
+  color: #075985;
+  background: #dff3ff;
+}
+
+.qr-state-pill.warning {
+  color: #895f00;
+  background: #fff1bf;
+}
+
+.qr-state-pill.success {
+  color: #12663d;
+  background: #dff8ea;
+}
+
+.qr-state-pill.danger {
+  color: #9f1239;
+  background: #ffe4e6;
+}
+
 .qr-placeholder {
   display: grid;
   place-items: center;
@@ -396,6 +433,7 @@ h2 {
 .qr-live {
   display: grid;
   place-items: center;
+  gap: 14px;
   min-height: 360px;
   padding: 20px;
   border: 1px solid #d7dee9;
@@ -409,6 +447,20 @@ h2 {
   border-radius: 8px;
   border: 1px solid #d7dee9;
   background: #ffffff;
+}
+
+.qr-live p {
+  max-width: 360px;
+  margin: 0;
+  color: #596779;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.qr-live small {
+  color: #667589;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .qr-box {

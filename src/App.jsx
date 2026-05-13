@@ -53,6 +53,82 @@ function getHealthErrorDetail(errorType) {
   return "Nenhum erro ativo detectado.";
 }
 
+function getWhatsappFlags(health) {
+  return {
+    connected: Boolean(health?.conectado || health?.connected),
+    authenticated: Boolean(health?.authenticated),
+    waitingQr: Boolean(health?.waiting_qr || health?.waitingQr),
+    sessionExpired: Boolean(health?.session_expired || health?.sessionExpired),
+  };
+}
+
+function getQrPanelState(health) {
+  const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const flags = getWhatsappFlags(health);
+
+  if (!health?.instalado) {
+    return {
+      tone: "neutral",
+      label: "Agente parado",
+      message: "Inicie o agente local para gerar o QR Code de pareamento.",
+    };
+  }
+
+  if (!health?.configurado) {
+    return {
+      tone: "warning",
+      label: "Aguardando ativacao",
+      message: "Ative o agente pela tela do RiverLub Web para liberar o pareamento.",
+    };
+  }
+
+  if (flags.connected) {
+    return {
+      tone: "success",
+      label: "Conectado",
+      message: "WhatsApp conectado. Nenhum QR Code e necessario agora.",
+    };
+  }
+
+  if (flags.authenticated) {
+    return {
+      tone: "info",
+      label: "Autenticado",
+      message: "QR lido com sucesso. Aguarde a sincronizacao do WhatsApp Web.",
+    };
+  }
+
+  if (flags.sessionExpired) {
+    return {
+      tone: "danger",
+      label: "Sessao expirada",
+      message: "A sessao foi desconectada. Reinicie o agente para receber um novo QR Code.",
+    };
+  }
+
+  if (qrDataUrl) {
+    return {
+      tone: "warning",
+      label: "QR disponivel",
+      message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
+    };
+  }
+
+  if (flags.waitingQr || health?.inicializando) {
+    return {
+      tone: "info",
+      label: "Aguardando QR",
+      message: "O agente esta preparando o WhatsApp Web. O QR aparece aqui automaticamente.",
+    };
+  }
+
+  return {
+    tone: "neutral",
+    label: "Sem QR ativo",
+    message: "Quando o WhatsApp solicitar autenticacao, o QR real aparece neste card.",
+  };
+}
+
 function App() {
   const [status, setStatus] = useState("STOPPED");
   const [health, setHealth] = useState(null);
@@ -75,6 +151,8 @@ function App() {
   const meta = STATUS_META[status] || STATUS_META.STOPPED;
   const isBusy = Boolean(busyAction);
   const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const qrPanelState = getQrPanelState(health);
+  const whatsappFlags = getWhatsappFlags(health);
   const errorType = classifyAgentError(health?.erro_ultimo || "");
 
   const addEvent = useCallback((level, message) => {
@@ -130,7 +208,7 @@ function App() {
 
     const statusTimer = window.setInterval(() => {
       refreshStatus({ silent: true });
-    }, 4000);
+    }, 2500);
 
     const logsTimer = window.setInterval(() => {
       refreshLogs();
@@ -160,10 +238,16 @@ function App() {
     },
     {
       label: "WhatsApp",
-      value: health?.conectado ? "Online" : "Offline",
+      value: whatsappFlags.connected
+        ? "Online"
+        : whatsappFlags.authenticated
+          ? "Autenticado"
+          : whatsappFlags.waitingQr
+            ? "Aguardando QR"
+            : "Offline",
       foot: health?.navegador_local ? "Navegador local detectado" : "Chrome/Edge ainda nao confirmado",
     },
-  ], [health, processState]);
+  ], [health, processState, whatsappFlags.authenticated, whatsappFlags.connected, whatsappFlags.waitingQr]);
 
   const latestAgentLogs = agentLogs.entries.slice(0, 8);
 
@@ -332,11 +416,21 @@ function App() {
                 <p className="eyebrow">Pareamento</p>
                 <h2>QR Code</h2>
               </div>
-              <QrCode size={24} />
+              <span className={`qr-state-pill ${qrPanelState.tone}`}>
+                <QrCode size={17} />
+                {qrPanelState.label}
+              </span>
             </div>
             <div className={qrDataUrl ? "qr-live" : "qr-placeholder"}>
               {qrDataUrl ? (
-                <img src={qrDataUrl} alt="QR Code do WhatsApp" />
+                <>
+                  <img src={qrDataUrl} alt="QR Code real do WhatsApp" />
+                  <p>{qrPanelState.message}</p>
+                  <small>
+                    Gerado em {formatDate(health?.qr_gerado_em || health?.ultimo_qr_em)}.
+                    {health?.qr_expira_em ? ` Expira em ${formatDate(health.qr_expira_em)}.` : ""}
+                  </small>
+                </>
               ) : (
                 <>
                   <div className="qr-box" aria-hidden="true">
@@ -345,10 +439,7 @@ function App() {
                     <span />
                     <span />
                   </div>
-                  <p>
-                    O agente atual envia o QR real para o backend RiverLub. O Connect
-                    ja esta pronto para renderizar o QR quando ele vier no health local.
-                  </p>
+                  <p>{qrPanelState.message}</p>
                 </>
               )}
             </div>
@@ -391,6 +482,22 @@ function App() {
               <div>
                 <dt>Ultimo QR</dt>
                 <dd>{formatDate(health?.ultimo_qr_em)}</dd>
+              </div>
+              <div>
+                <dt>QR expira em</dt>
+                <dd>{formatDate(health?.qr_expira_em)}</dd>
+              </div>
+              <div>
+                <dt>Estado WhatsApp</dt>
+                <dd>{health?.whatsapp_state || health?.whatsappState || "-"}</dd>
+              </div>
+              <div>
+                <dt>Autenticado</dt>
+                <dd>{whatsappFlags.authenticated ? "Sim" : "Nao"}</dd>
+              </div>
+              <div>
+                <dt>Sessao expirada</dt>
+                <dd>{whatsappFlags.sessionExpired ? "Sim" : "Nao"}</dd>
               </div>
               <div>
                 <dt>Config local</dt>
