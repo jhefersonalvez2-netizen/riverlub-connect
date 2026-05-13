@@ -1,5 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
+
 const LOCAL_AGENT_URL = "http://127.0.0.1:47851";
 const LOCAL_TIMEOUT_MS = 1800;
+
+function isTauriRuntime() {
+  return Boolean(window.__TAURI_INTERNALS__);
+}
 
 async function fetchLocalAgent(path, options = {}) {
   const controller = new AbortController();
@@ -28,12 +34,19 @@ async function fetchLocalAgent(path, options = {}) {
 }
 
 export async function getLocalAgentHealth() {
+  if (isTauriRuntime()) {
+    return invoke("local_agent_health");
+  }
+
   return fetchLocalAgent("/health");
 }
 
 export async function disconnectLocalAgent() {
+  if (isTauriRuntime()) {
+    return invoke("disconnect_agent_session");
+  }
+
   return fetchLocalAgent("/desconectar", {
     method: "POST",
   });
 }
-

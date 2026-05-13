@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertTriangle,
   FileText,
   LogOut,
   MonitorCog,
@@ -7,55 +8,24 @@ import {
   QrCode,
   RefreshCw,
   ShieldCheck,
+  Square,
   Wifi,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { readAgentLogs } from "./agent/agentLogs";
+import {
+  getAgentProcessStatus,
+  restartAgentProcess,
+  startAgentProcess,
+  stopAgentProcess,
+} from "./agent/agentProcess";
+import {
+  classifyAgentError,
+  getAgentStatus,
+  getProcessOrigin,
+  STATUS_META,
+} from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth } from "./agentClient";
-
-const STATUS = {
-  STOPPED: "STOPPED",
-  STARTING: "STARTING",
-  WAITING_QR: "WAITING_QR",
-  CONNECTED: "CONNECTED",
-  ERROR: "ERROR",
-};
-
-const STATUS_META = {
-  [STATUS.STOPPED]: {
-    label: "Agente parado",
-    tone: "neutral",
-    detail: "Nenhum agente local respondeu neste computador.",
-  },
-  [STATUS.STARTING]: {
-    label: "Iniciando",
-    tone: "info",
-    detail: "O agente local esta abrindo a sessao do WhatsApp.",
-  },
-  [STATUS.WAITING_QR]: {
-    label: "Aguardando QR Code",
-    tone: "warning",
-    detail: "Abra o painel Web para visualizar o QR Code real nesta fase.",
-  },
-  [STATUS.CONNECTED]: {
-    label: "Conectado",
-    tone: "success",
-    detail: "WhatsApp local conectado e pronto para receber jobs.",
-  },
-  [STATUS.ERROR]: {
-    label: "Erro",
-    tone: "danger",
-    detail: "O agente local retornou erro. Confira logs antes de reiniciar.",
-  },
-};
-
-function getStatusFromHealth(health) {
-  if (!health?.instalado) return STATUS.STOPPED;
-  if (health.erro_ultimo) return STATUS.ERROR;
-  if (health.conectado) return STATUS.CONNECTED;
-  if (health.inicializando) return STATUS.STARTING;
-  if (health.configurado) return STATUS.WAITING_QR;
-  return STATUS.STOPPED;
-}
 
 function formatDate(value) {
   if (!value) return "-";
@@ -64,112 +34,172 @@ function formatDate(value) {
   return date.toLocaleString("pt-BR");
 }
 
+function formatTimestampMs(value) {
+  if (!value) return "-";
+  return formatDate(Number(value));
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function getHealthErrorDetail(errorType) {
+  if (errorType === "auth") return "Falha de autenticacao ou sessao do WhatsApp.";
+  if (errorType === "browser") return "Falha relacionada ao Chrome, Edge ou Puppeteer.";
+  if (errorType === "port") return "Conflito na porta local 47851.";
+  if (errorType === "generic") return "Erro retornado pelo agente local.";
+  return "Nenhum erro ativo detectado.";
+}
+
 function App() {
-  const [status, setStatus] = useState(STATUS.STOPPED);
+  const [status, setStatus] = useState("STOPPED");
   const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
+  const [processState, setProcessState] = useState(null);
+  const [agentLogs, setAgentLogs] = useState({
+    exists: false,
+    logPath: "",
+    entries: [],
+  });
+  const [busyAction, setBusyAction] = useState("");
+  const [logsOpen, setLogsOpen] = useState(true);
   const [events, setEvents] = useState([
     {
       at: new Date().toISOString(),
       level: "info",
-      message: "RiverLub Connect iniciado em modo base.",
+      message: "RiverLub Connect pronto para gerenciar o agente WhatsApp.",
     },
   ]);
 
-  const meta = STATUS_META[status];
+  const meta = STATUS_META[status] || STATUS_META.STOPPED;
+  const isBusy = Boolean(busyAction);
+  const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const errorType = classifyAgentError(health?.erro_ultimo || "");
 
   const addEvent = useCallback((level, message) => {
     setEvents((current) => [
       { at: new Date().toISOString(), level, message },
       ...current,
-    ].slice(0, 30));
+    ].slice(0, 40));
   }, []);
 
-  const refreshStatus = useCallback(async ({ silent = false } = {}) => {
-    if (!silent) setLoading(true);
-
+  const refreshLogs = useCallback(async () => {
     try {
-      const data = await getLocalAgentHealth();
-      const nextStatus = getStatusFromHealth(data);
-      setHealth(data);
-      setStatus(nextStatus);
-
-      if (!silent) {
-        addEvent("info", `Status local lido: ${STATUS_META[nextStatus].label}.`);
-      }
-    } catch {
-      setHealth(null);
-      setStatus(STATUS.STOPPED);
-      if (!silent) {
-        addEvent("warn", "Nenhum agente local respondeu em 127.0.0.1:47851.");
-      }
-    } finally {
-      if (!silent) setLoading(false);
+      const logs = await readAgentLogs(80);
+      setAgentLogs(logs);
+    } catch (error) {
+      addEvent("warn", error.message || "Nao foi possivel ler logs locais.");
     }
   }, [addEvent]);
 
-  useEffect(() => {
-    refreshStatus({ silent: true });
-    const timer = window.setInterval(() => {
-      refreshStatus({ silent: true });
-    }, 5000);
+  const refreshStatus = useCallback(async ({ silent = false, includeLogs = false } = {}) => {
+    if (!silent) setBusyAction("refresh");
 
-    return () => window.clearInterval(timer);
-  }, [refreshStatus]);
+    const [processResult, healthResult] = await Promise.allSettled([
+      getAgentProcessStatus(),
+      getLocalAgentHealth(),
+    ]);
+
+    const nextProcessState =
+      processResult.status === "fulfilled" ? processResult.value : null;
+    const nextHealth = healthResult.status === "fulfilled" ? healthResult.value : null;
+    const nextStatus = getAgentStatus({
+      health: nextHealth,
+      processState: nextProcessState,
+    });
+
+    setProcessState(nextProcessState);
+    setHealth(nextHealth);
+    setStatus(nextStatus);
+
+    if (!silent) {
+      const label = STATUS_META[nextStatus]?.label || "Status desconhecido";
+      addEvent("info", `Leitura local atualizada: ${label}.`);
+    }
+
+    if (includeLogs) {
+      await refreshLogs();
+    }
+
+    if (!silent) setBusyAction("");
+  }, [addEvent, refreshLogs]);
+
+  useEffect(() => {
+    refreshStatus({ silent: true, includeLogs: true });
+
+    const statusTimer = window.setInterval(() => {
+      refreshStatus({ silent: true });
+    }, 4000);
+
+    const logsTimer = window.setInterval(() => {
+      refreshLogs();
+    }, 7000);
+
+    return () => {
+      window.clearInterval(statusTimer);
+      window.clearInterval(logsTimer);
+    };
+  }, [refreshLogs, refreshStatus]);
 
   const metrics = useMemo(() => [
     {
-      label: "Agente local",
-      value: health?.instalado ? "Detectado" : "Nao encontrado",
-      foot: health?.versao ? `Versao ${health.versao}` : "Porta 47851",
+      label: "Processo",
+      value: getProcessOrigin(processState),
+      foot: processState?.managedPid ? `PID ${processState.managedPid}` : "Sem PID gerenciado",
+    },
+    {
+      label: "Porta local",
+      value: processState?.portOpen ? "Ocupada" : "Livre",
+      foot: `127.0.0.1:${processState?.port || 47851}`,
     },
     {
       label: "Configuracao",
       value: health?.configurado ? "Pareado" : "Pendente",
-      foot: "Token nao exibido na interface",
+      foot: "Token nunca aparece nesta tela",
     },
     {
       label: "WhatsApp",
       value: health?.conectado ? "Online" : "Offline",
-      foot: health?.navegador_local ? "Navegador local detectado" : "Chrome/Edge nao confirmado",
+      foot: health?.navegador_local ? "Navegador local detectado" : "Chrome/Edge ainda nao confirmado",
     },
-    {
-      label: "Ultima leitura",
-      value: health?.atualizado_em ? formatDate(health.atualizado_em) : "-",
-      foot: health?.ultimo_evento || "Sem evento local",
-    },
-  ], [health]);
+  ], [health, processState]);
+
+  const latestAgentLogs = agentLogs.entries.slice(0, 8);
+
+  async function runAction(action, eventMessage, callback) {
+    setBusyAction(action);
+    try {
+      const result = await callback();
+      if (result?.message) {
+        addEvent("info", result.message);
+      } else if (eventMessage) {
+        addEvent("info", eventMessage);
+      }
+      await wait(700);
+      await refreshStatus({ silent: true, includeLogs: true });
+    } catch (error) {
+      addEvent("error", error.message || "Acao local falhou.");
+      setStatus("ERROR");
+    } finally {
+      setBusyAction("");
+    }
+  }
 
   async function handleStartAgent() {
-    addEvent(
-      "info",
-      "Base criada. Na proxima fase o Tauri iniciara o agente como sidecar sem terminal."
-    );
-    await refreshStatus();
+    await runAction("start", "Agente iniciado pelo RiverLub Connect.", startAgentProcess);
+  }
+
+  async function handleStopAgent() {
+    await runAction("stop", "Comando para parar processo gerenciado enviado.", stopAgentProcess);
   }
 
   async function handleRestartAgent() {
-    setStatus(STATUS.STARTING);
-    addEvent(
-      "info",
-      "Reinicio preparado para a fase sidecar. Por enquanto a acao apenas reler o agente atual."
-    );
-    await refreshStatus();
+    await runAction("restart", "Comando de reinicio enviado.", restartAgentProcess);
   }
 
   async function handleDisconnect() {
-    setLoading(true);
-    try {
-      await disconnectLocalAgent();
-      addEvent("info", "Comando de desconexao enviado ao agente local atual.");
-      await refreshStatus({ silent: true });
-    } catch (error) {
-      addEvent("error", error.message || "Nao foi possivel desconectar o agente local.");
-      setStatus(STATUS.ERROR);
-    } finally {
-      setLoading(false);
-    }
+    await runAction("disconnect", "Sessao WhatsApp desconectada.", disconnectLocalAgent);
   }
 
   return (
@@ -200,8 +230,10 @@ function App() {
 
         <div className="side-note">
           <span>Windows primeiro</span>
-          <strong>Base Tauri v2</strong>
-          <small>Sem alterar o RiverLub Web nem o backend em producao.</small>
+          <strong>Controle local seguro</strong>
+          <small>
+            Mantem o fluxo .cmd existente e so encerra processos criados pelo Connect.
+          </small>
         </div>
       </aside>
 
@@ -211,7 +243,7 @@ function App() {
             <p className="eyebrow">Integracoes locais</p>
             <h1>RiverLub Connect</h1>
             <p className="intro">
-              Controle local para WhatsApp, impressoras e futuras rotinas da oficina.
+              Controle desktop para iniciar, monitorar e operar o agente WhatsApp da oficina.
             </p>
           </div>
           <div className={`status-pill ${meta.tone}`}>
@@ -220,28 +252,58 @@ function App() {
           </div>
         </header>
 
-        <section className="status-band">
+        <section className={`status-band ${meta.tone}`}>
           <div>
             <p className="eyebrow">Status atual</p>
             <h2>{meta.label}</h2>
             <p>{health?.erro_ultimo || meta.detail}</p>
           </div>
           <div className="action-row">
-            <button className="btn primary" type="button" onClick={handleStartAgent} disabled={loading}>
+            <button
+              className="btn primary"
+              type="button"
+              onClick={handleStartAgent}
+              disabled={isBusy || processState?.managedRunning || processState?.externalRunning}
+              title={processState?.externalRunning ? "Agente externo ja esta usando a porta local" : "Iniciar agente"}
+            >
               <Power size={17} />
-              Iniciar agente
+              Iniciar
             </button>
-            <button className="btn secondary" type="button" onClick={handleRestartAgent} disabled={loading}>
+            <button
+              className="btn secondary"
+              type="button"
+              onClick={handleStopAgent}
+              disabled={isBusy || !processState?.managedRunning}
+              title="Para apenas o processo iniciado pelo Connect"
+            >
+              <Square size={15} />
+              Parar
+            </button>
+            <button
+              className="btn secondary"
+              type="button"
+              onClick={handleRestartAgent}
+              disabled={isBusy || processState?.externalRunning}
+            >
               <RefreshCw size={17} />
               Reiniciar
             </button>
-            <button className="btn danger" type="button" onClick={handleDisconnect} disabled={loading || !health?.instalado}>
+            <button
+              className="btn danger"
+              type="button"
+              onClick={handleDisconnect}
+              disabled={isBusy || !health?.instalado}
+            >
               <LogOut size={17} />
               Desconectar
             </button>
-            <button className="btn ghost" type="button" onClick={() => setLogsOpen((open) => !open)}>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => setLogsOpen((open) => !open)}
+            >
               <FileText size={17} />
-              Ver logs
+              Logs
             </button>
           </div>
         </section>
@@ -256,6 +318,13 @@ function App() {
           ))}
         </section>
 
+        {errorType ? (
+          <section className="diagnostic-strip">
+            <AlertTriangle size={18} />
+            <span>{getHealthErrorDetail(errorType)}</span>
+          </section>
+        ) : null}
+
         <section className="workspace-grid">
           <div className="qr-panel">
             <div className="panel-heading">
@@ -265,17 +334,23 @@ function App() {
               </div>
               <QrCode size={24} />
             </div>
-            <div className="qr-placeholder">
-              <div className="qr-box">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-              <p>
-                Nesta base inicial, o QR real continua vindo pelo painel Web. O Connect
-                ja esta preparado para receber essa tela na proxima fase.
-              </p>
+            <div className={qrDataUrl ? "qr-live" : "qr-placeholder"}>
+              {qrDataUrl ? (
+                <img src={qrDataUrl} alt="QR Code do WhatsApp" />
+              ) : (
+                <>
+                  <div className="qr-box" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <p>
+                    O agente atual envia o QR real para o backend RiverLub. O Connect
+                    ja esta pronto para renderizar o QR quando ele vier no health local.
+                  </p>
+                </>
+              )}
             </div>
           </div>
 
@@ -285,19 +360,29 @@ function App() {
                 <p className="eyebrow">Agente atual</p>
                 <h2>Leitura local</h2>
               </div>
-              <button className="icon-btn" type="button" onClick={() => refreshStatus()} disabled={loading}>
+              <button
+                className="icon-btn"
+                type="button"
+                onClick={() => refreshStatus({ includeLogs: true })}
+                disabled={isBusy}
+                title="Atualizar status"
+              >
                 <RefreshCw size={18} />
               </button>
             </div>
 
             <dl className="detail-list">
               <div>
-                <dt>API configurada</dt>
-                <dd>{health?.apiUrl || "-"}</dd>
+                <dt>Origem do processo</dt>
+                <dd>{getProcessOrigin(processState)}</dd>
               </div>
               <div>
-                <dt>Porta local</dt>
-                <dd>{health?.porta || "47851"}</dd>
+                <dt>Inicio gerenciado</dt>
+                <dd>{formatTimestampMs(processState?.managedStartedAtMs)}</dd>
+              </div>
+              <div>
+                <dt>API configurada</dt>
+                <dd>{health?.apiUrl || "-"}</dd>
               </div>
               <div>
                 <dt>Ultimo evento</dt>
@@ -307,6 +392,18 @@ function App() {
                 <dt>Ultimo QR</dt>
                 <dd>{formatDate(health?.ultimo_qr_em)}</dd>
               </div>
+              <div>
+                <dt>Config local</dt>
+                <dd>{processState?.paths?.configPath || "-"}</dd>
+              </div>
+              <div>
+                <dt>Sessao LocalAuth</dt>
+                <dd>{processState?.paths?.sessionPath || "-"}</dd>
+              </div>
+              <div>
+                <dt>Arquivo do agente</dt>
+                <dd>{processState?.paths?.agentEntry || "-"}</dd>
+              </div>
             </dl>
           </div>
         </section>
@@ -315,24 +412,46 @@ function App() {
           <section className="logs-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">Eventos desta tela</p>
-                <h2>Logs</h2>
+                <p className="eyebrow">Observabilidade local</p>
+                <h2>Logs recentes</h2>
               </div>
-              <button className="text-btn" type="button" onClick={() => setEvents([])}>
-                Limpar
+              <button className="text-btn" type="button" onClick={refreshLogs}>
+                Atualizar logs
               </button>
             </div>
+
+            <div className="log-path">
+              {agentLogs.logPath || processState?.paths?.logPath || "Log ainda nao localizado"}
+            </div>
+
             <div className="event-list">
-              {events.length === 0 ? (
-                <p className="empty-log">Nenhum evento registrado nesta execucao.</p>
+              {latestAgentLogs.length === 0 ? (
+                <p className="empty-log">
+                  Nenhum log do agente encontrado ainda. Ao iniciar o agente, os eventos aparecem aqui.
+                </p>
               ) : (
-                events.map((event) => (
-                  <div className={`event-row ${event.level}`} key={`${event.at}-${event.message}`}>
-                    <time>{formatDate(event.at)}</time>
-                    <span>{event.message}</span>
+                latestAgentLogs.map((entry, index) => (
+                  <div
+                    className={`event-row ${entry.level}`}
+                    key={`${entry.at || "log"}-${entry.message}-${index}`}
+                  >
+                    <time>{formatDate(entry.at)}</time>
+                    <span>
+                      {entry.message}
+                      {entry.extra ? <small>{String(entry.extra)}</small> : null}
+                    </span>
                   </div>
                 ))
               )}
+            </div>
+
+            <div className="event-list screen-events">
+              {events.slice(0, 5).map((event) => (
+                <div className={`event-row ${event.level}`} key={`${event.at}-${event.message}`}>
+                  <time>{formatDate(event.at)}</time>
+                  <span>{event.message}</span>
+                </div>
+              ))}
             </div>
           </section>
         ) : null}
@@ -342,4 +461,3 @@ function App() {
 }
 
 export default App;
-

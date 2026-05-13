@@ -43,7 +43,22 @@ Feito nesta pasta:
 - Logs de interface em memoria, sem ler arquivos locais ainda.
 - Bundle preparado para NSIS (`RiverLub Connect Setup`) quando o ambiente Rust estiver pronto.
 
-### Fase 2: sidecar do agente
+### Fase 2: gerenciamento local do agente
+
+Feito nesta fase:
+
+- Comandos Tauri nativos para consultar processo, porta, caminhos locais e logs.
+- Inicio do agente atual em `backend/whatsapp-agent/src/index.js` por `node src/index.js`.
+- Processo iniciado sem terminal visivel no Windows.
+- Parada segura limitada ao processo criado pelo Connect.
+- Deteccao de agente externo iniciado pelo `.cmd` ou terminal, sem encerrar esse processo.
+- Leitura nativa de `GET /health` e `POST /desconectar` em `127.0.0.1:47851`, evitando problema de CORS da WebView.
+- Logs recentes lidos de `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
+- UI com estados: parado, iniciando, aguardando QR, conectado, reconectando, desconectado, erro e agente externo.
+
+O `@tauri-apps/plugin-shell` ainda nao foi instalado nesta fase porque o agente atual continua sendo um app Node em pasta irma do repo. Para usar sidecar corretamente, o binario precisa estar declarado no bundle/capabilities do Tauri e empacotado junto do instalador. A abstracao criada em `src/agent` deixa essa troca preparada.
+
+### Fase 3: sidecar do agente
 
 Proxima implementacao recomendada:
 
@@ -53,7 +68,7 @@ Proxima implementacao recomendada:
 - Manter logs em `%APPDATA%/RiverLub/connect/logs`.
 - Preservar a sessao atual em `%APPDATA%/RiverLub/whatsapp-agent/session` ou migrar com cuidado.
 
-### Fase 3: pareamento nativo
+### Fase 4: pareamento nativo
 
 - Web gera codigo temporario de pareamento.
 - Connect recebe o codigo.
@@ -61,7 +76,7 @@ Proxima implementacao recomendada:
 - Connect salva token localmente sem expor na UI.
 - Status continua aparecendo no painel Web.
 
-### Fase 4: instalador
+### Fase 5: instalador
 
 - Gerar `RiverLub-Connect-Setup.exe` via Tauri/NSIS.
 - Assinar o executavel para reduzir bloqueios de antivirus e SmartScreen.
@@ -97,4 +112,3 @@ O instalador Tauri/NSIS ficara em `src-tauri/target/release/bundle/nsis` quando 
 - Sidecar Node precisa ser empacotado com cuidado para nao depender de terminal ou PATH do usuario.
 - QR Code real hoje fica no backend/painel Web, nao no servidor local. Para QR nativo no Connect, o agente precisa expor o QR localmente ou o Connect precisa consultar o backend autenticado.
 - Desconectar e uma acao real quando o agente atual estiver rodando.
-

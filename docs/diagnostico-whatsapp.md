@@ -60,3 +60,12 @@
 - O sidecar Tauri deve preservar sessao e logs sem apagar dados atuais.
 - O instalador final precisa assinatura digital para reduzir falso positivo.
 
+## Implementacao atual no RiverLub Connect
+
+- O Connect consulta o processo local por comandos Tauri em Rust, nao pelo browser puro.
+- `GET /health` e `POST /desconectar` sao chamados nativamente pelo Tauri em `127.0.0.1:47851`, sem depender de CORS.
+- O botao Iniciar procura `backend/whatsapp-agent/src/index.js` a partir da pasta atual e executa `node src/index.js`.
+- O processo iniciado pelo Connect usa a mesma porta, config, sessao LocalAuth e log do agente atual.
+- O Connect nao mata processos externos: se a porta 47851 ja estiver ocupada pelo `.cmd`, ele apenas monitora.
+- Logs recentes sao lidos de `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
+- O QR Code nativo esta preparado na UI, mas ainda depende do agente expor `qr_data_url` localmente ou do pareamento autenticado com backend.
