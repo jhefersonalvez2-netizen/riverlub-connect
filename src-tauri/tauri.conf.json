@@ -39,6 +39,17 @@
     "publisher": "RiverLub",
     "category": "Business",
     "shortDescription": "Integracoes locais do RiverLub",
-    "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows."
+    "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows.",
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["PortugueseBR"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "RiverLub"
+      }
+    }
   }
 }

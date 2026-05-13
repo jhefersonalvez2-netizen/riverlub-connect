@@ -1,17 +1,24 @@
 import {
   Activity,
   AlertTriangle,
+  CheckCircle2,
+  Clock3,
+  Copy,
+  Download,
+  ExternalLink,
   FileText,
+  Loader2,
   LogOut,
   MonitorCog,
-  Power,
+  PlayCircle,
   QrCode,
   RefreshCw,
   ShieldCheck,
   Square,
   Wifi,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readAgentLogs } from "./agent/agentLogs";
 import {
   getAgentProcessStatus,
@@ -20,12 +27,20 @@ import {
   stopAgentProcess,
 } from "./agent/agentProcess";
 import {
+  AGENT_STATUS,
   classifyAgentError,
   getAgentStatus,
   getProcessOrigin,
   STATUS_META,
 } from "./agent/agentStatus";
-import { disconnectLocalAgent, getLocalAgentHealth } from "./agentClient";
+import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
+
+const CONNECT_VERSION = "0.1.0";
+const LOCAL_AGENT_PORT = 47851;
+const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
+const RELEASE_URL =
+  import.meta.env.VITE_RIVERLUB_CONNECT_RELEASE_URL ||
+  "https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest";
 
 function formatDate(value) {
   if (!value) return "-";
@@ -45,56 +60,109 @@ function wait(ms) {
   });
 }
 
+function isTauriRuntime() {
+  return Boolean(window.__TAURI_INTERNALS__);
+}
+
+async function openExternalUrl(url) {
+  if (isTauriRuntime()) {
+    await invoke("open_external_url", { url });
+    return;
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function sanitizeDiagnostic(value) {
+  return String(value || "")
+    .replace(/rla_[a-f0-9]{24,}/gi, "rla_[oculto]")
+    .replace(/Bearer\s+[^\s"]+/gi, "Bearer [oculto]")
+    .replace(/agentToken["']?\s*:\s*["'][^"']+["']/gi, 'agentToken: "[oculto]"')
+    .replace(/qr_data_url["']?\s*:\s*["'][^"']+["']/gi, 'qr_data_url: "[oculto]"')
+    .replace(/data:image\/[^;\s]+;base64,[A-Za-z0-9+/=]+/g, "data:image/[qr-oculto]");
+}
+
 function getHealthErrorDetail(errorType) {
-  if (errorType === "auth") return "Falha de autenticacao ou sessao do WhatsApp.";
-  if (errorType === "browser") return "Falha relacionada ao Chrome, Edge ou Puppeteer.";
-  if (errorType === "port") return "Conflito na porta local 47851.";
-  if (errorType === "generic") return "Erro retornado pelo agente local.";
+  if (errorType === "auth") return "A sessao do WhatsApp precisa ser refeita.";
+  if (errorType === "browser") return "Chrome, Edge ou Puppeteer nao abriu corretamente.";
+  if (errorType === "port") return "A porta local 47851 esta ocupada por outro processo.";
+  if (errorType === "generic") return "O agente local retornou erro. Confira os logs recentes.";
   return "Nenhum erro ativo detectado.";
 }
 
 function getWhatsappFlags(health) {
   return {
-    connected: Boolean(health?.conectado || health?.connected),
+    connected: Boolean(health?.conectado || health?.connected || health?.pronto_para_envio),
     authenticated: Boolean(health?.authenticated),
     waitingQr: Boolean(health?.waiting_qr || health?.waitingQr),
     sessionExpired: Boolean(health?.session_expired || health?.sessionExpired),
+    qrExpired: Boolean(health?.qr_expirado_em || health?.qrExpiradoEm),
   };
+}
+
+function getAccountInfo(health) {
+  return {
+    name: health?.nome_conta || health?.nomeConta || "-",
+    phone: health?.telefone_conectado || health?.telefoneConectado || "-",
+  };
+}
+
+function getPollingInterval(status, health) {
+  const flags = getWhatsappFlags(health);
+
+  if (
+    status === AGENT_STATUS.STARTING ||
+    status === AGENT_STATUS.RECONNECTING ||
+    status === AGENT_STATUS.WAITING_QR ||
+    status === AGENT_STATUS.QR_READY ||
+    status === AGENT_STATUS.AUTHENTICATED ||
+    flags.waitingQr
+  ) {
+    return 1600;
+  }
+
+  if (status === AGENT_STATUS.CONNECTED) return 9000;
+  if (status === AGENT_STATUS.ERROR || status === AGENT_STATUS.SESSION_EXPIRED) return 4500;
+  return 6500;
 }
 
 function getQrPanelState(health) {
   const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
   const flags = getWhatsappFlags(health);
 
-  if (!health?.instalado) {
-    return {
-      tone: "neutral",
-      label: "Agente parado",
-      message: "Inicie o agente local para gerar o QR Code de pareamento.",
-    };
-  }
-
-  if (!health?.configurado) {
-    return {
-      tone: "warning",
-      label: "Aguardando ativacao",
-      message: "Ative o agente pela tela do RiverLub Web para liberar o pareamento.",
-    };
-  }
-
   if (flags.connected) {
     return {
       tone: "success",
-      label: "Conectado",
-      message: "WhatsApp conectado. Nenhum QR Code e necessario agora.",
+      label: "WhatsApp conectado",
+      message: "Sessao pronta. O QR fica oculto enquanto a oficina estiver conectada.",
+      loading: false,
     };
   }
 
   if (flags.authenticated) {
     return {
       tone: "info",
-      label: "Autenticado",
-      message: "QR lido com sucesso. Aguarde a sincronizacao do WhatsApp Web.",
+      label: "Autenticando",
+      message: "QR lido. Aguarde alguns segundos enquanto o WhatsApp Web sincroniza.",
+      loading: true,
+    };
+  }
+
+  if (qrDataUrl) {
+    return {
+      tone: "warning",
+      label: "QR Code disponivel",
+      message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
+      loading: false,
+    };
+  }
+
+  if (flags.qrExpired) {
+    return {
+      tone: "danger",
+      label: "QR expirado",
+      message: "O QR expirou por seguranca. Clique em Reconectar para gerar um novo.",
+      loading: false,
     };
   }
 
@@ -102,35 +170,140 @@ function getQrPanelState(health) {
     return {
       tone: "danger",
       label: "Sessao expirada",
-      message: "A sessao foi desconectada. Reinicie o agente para receber um novo QR Code.",
-    };
-  }
-
-  if (qrDataUrl) {
-    return {
-      tone: "warning",
-      label: "QR disponivel",
-      message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
+      message: "A sessao foi desconectada. Reinicie o agente para receber um novo QR.",
+      loading: false,
     };
   }
 
   if (flags.waitingQr || health?.inicializando) {
     return {
       tone: "info",
-      label: "Aguardando QR",
+      label: "Aguardando QR Code",
       message: "O agente esta preparando o WhatsApp Web. O QR aparece aqui automaticamente.",
+      loading: true,
+    };
+  }
+
+  if (health?.instalado && !health?.configurado) {
+    return {
+      tone: "warning",
+      label: "Ativacao pendente",
+      message: "O agente esta rodando, mas ainda precisa ser vinculado a oficina pelo painel RiverLub.",
+      loading: false,
+    };
+  }
+
+  if (health?.instalado) {
+    return {
+      tone: "neutral",
+      label: "Sem QR ativo",
+      message: "Clique em Conectar WhatsApp para iniciar ou reconectar a sessao.",
+      loading: false,
     };
   }
 
   return {
     tone: "neutral",
-    label: "Sem QR ativo",
-    message: "Quando o WhatsApp solicitar autenticacao, o QR real aparece neste card.",
+    label: "Agente parado",
+    message: "O QR aparece aqui quando o agente local estiver rodando e o WhatsApp pedir autenticacao.",
+    loading: false,
   };
 }
 
+function getNextSteps(status, health, processState) {
+  const flags = getWhatsappFlags(health);
+
+  if (processState?.externalRunning) {
+    return [
+      "Ha um agente legado usando a porta local. O Connect vai apenas monitorar.",
+      "Feche o .cmd antigo se quiser que o Connect assuma o reinicio completo.",
+      "A sessao atual do WhatsApp nao sera encerrada automaticamente.",
+    ];
+  }
+
+  if (status === AGENT_STATUS.CONNECTED) {
+    return [
+      "Mantenha o Connect aberto neste computador da oficina.",
+      "O RiverLub Web pode ficar apenas como painel de status.",
+      "Envios e verificacoes ja podem usar o WhatsApp conectado.",
+    ];
+  }
+
+  if (status === AGENT_STATUS.QR_READY) {
+    return [
+      "Abra o WhatsApp da oficina no celular.",
+      "Entre em Aparelhos conectados e leia o QR exibido.",
+      "Aguarde o status mudar para WhatsApp conectado.",
+    ];
+  }
+
+  if (flags.waitingQr || status === AGENT_STATUS.STARTING) {
+    return [
+      "Aguarde o Chrome/Edge iniciar em segundo plano.",
+      "Nao feche esta janela enquanto o QR esta sendo gerado.",
+      "Se passar de alguns minutos, use Reiniciar agente.",
+    ];
+  }
+
+  if (status === AGENT_STATUS.SESSION_EXPIRED || flags.qrExpired) {
+    return [
+      "Clique em Reconectar WhatsApp.",
+      "Leia o novo QR quando ele aparecer.",
+      "Se o erro repetir, confira se Chrome ou Edge esta instalado.",
+    ];
+  }
+
+  if (status === AGENT_STATUS.ERROR) {
+    return [
+      "Copie o diagnostico antes de reiniciar.",
+      "Confira se Chrome ou Edge esta disponivel neste Windows.",
+      "Reinicie apenas pelo Connect para preservar o controle do processo.",
+    ];
+  }
+
+  return [
+    "Clique em Conectar WhatsApp para iniciar o agente local.",
+    "Quando o QR aparecer, leia com o celular da oficina.",
+    "Depois de conectado, mantenha este app aberto.",
+  ];
+}
+
+function getPrimaryAction(status, health, processState) {
+  const flags = getWhatsappFlags(health);
+
+  if (processState?.externalRunning) {
+    return { label: "Atualizar leitura", action: "refresh", disabled: false };
+  }
+
+  if (status === AGENT_STATUS.CONNECTED) {
+    return { label: "Abrir painel RiverLub", action: "panel", disabled: false };
+  }
+
+  if (status === AGENT_STATUS.QR_READY) {
+    return { label: "Leia o QR no celular", action: "none", disabled: true };
+  }
+
+  if (status === AGENT_STATUS.WAITING_QR || status === AGENT_STATUS.AUTHENTICATED) {
+    return { label: "Aguardando WhatsApp", action: "none", disabled: true };
+  }
+
+  if (status === AGENT_STATUS.STARTING || status === AGENT_STATUS.RECONNECTING) {
+    return { label: "Iniciando agente", action: "none", disabled: true };
+  }
+
+  if (flags.sessionExpired || flags.qrExpired || status === AGENT_STATUS.ERROR) {
+    return { label: "Reconectar WhatsApp", action: "restart", disabled: false };
+  }
+
+  return { label: "Conectar WhatsApp", action: "start", disabled: false };
+}
+
+function getToneDot(tone) {
+  return `tone-dot ${tone || "neutral"}`;
+}
+
 function App() {
-  const [status, setStatus] = useState("STOPPED");
+  const [status, setStatus] = useState(AGENT_STATUS.STOPPED);
   const [health, setHealth] = useState(null);
   const [processState, setProcessState] = useState(null);
   const [agentLogs, setAgentLogs] = useState({
@@ -140,31 +313,39 @@ function App() {
   });
   const [busyAction, setBusyAction] = useState("");
   const [logsOpen, setLogsOpen] = useState(true);
+  const [visible, setVisible] = useState(() => !document.hidden);
+  const [diagnosticCopied, setDiagnosticCopied] = useState(false);
   const [events, setEvents] = useState([
     {
       at: new Date().toISOString(),
       level: "info",
-      message: "RiverLub Connect pronto para gerenciar o agente WhatsApp.",
+      message: "RiverLub Connect pronto para gerenciar o WhatsApp.",
     },
   ]);
+  const refreshingRef = useRef(false);
 
   const meta = STATUS_META[status] || STATUS_META.STOPPED;
   const isBusy = Boolean(busyAction);
   const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
   const qrPanelState = getQrPanelState(health);
   const whatsappFlags = getWhatsappFlags(health);
+  const account = getAccountInfo(health);
   const errorType = classifyAgentError(health?.erro_ultimo || "");
+  const primaryAction = getPrimaryAction(status, health, processState);
+  const nextSteps = getNextSteps(status, health, processState);
+  const pollingInterval = getPollingInterval(status, health);
+  const latestAgentLogs = agentLogs.entries.slice(0, 12);
 
   const addEvent = useCallback((level, message) => {
     setEvents((current) => [
       { at: new Date().toISOString(), level, message },
       ...current,
-    ].slice(0, 40));
+    ].slice(0, 60));
   }, []);
 
   const refreshLogs = useCallback(async () => {
     try {
-      const logs = await readAgentLogs(80);
+      const logs = await readAgentLogs(120);
       setAgentLogs(logs);
     } catch (error) {
       addEvent("warn", error.message || "Nao foi possivel ler logs locais.");
@@ -172,87 +353,135 @@ function App() {
   }, [addEvent]);
 
   const refreshStatus = useCallback(async ({ silent = false, includeLogs = false } = {}) => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
     if (!silent) setBusyAction("refresh");
 
-    const [processResult, healthResult] = await Promise.allSettled([
-      getAgentProcessStatus(),
-      getLocalAgentHealth(),
-    ]);
+    try {
+      const [processResult, healthResult, qrResult] = await Promise.allSettled([
+        getAgentProcessStatus(),
+        getLocalAgentHealth(),
+        getLocalAgentQr(),
+      ]);
 
-    const nextProcessState =
-      processResult.status === "fulfilled" ? processResult.value : null;
-    const nextHealth = healthResult.status === "fulfilled" ? healthResult.value : null;
-    const nextStatus = getAgentStatus({
-      health: nextHealth,
-      processState: nextProcessState,
-    });
+      const nextProcessState =
+        processResult.status === "fulfilled" ? processResult.value : null;
+      const healthPayload = healthResult.status === "fulfilled" ? healthResult.value : null;
+      const qrPayload = qrResult.status === "fulfilled" ? qrResult.value : null;
+      const nextHealth = healthPayload || qrPayload
+        ? {
+            ...(healthPayload || {}),
+            ...(qrPayload || {}),
+          }
+        : null;
+      const nextStatus = getAgentStatus({
+        health: nextHealth,
+        processState: nextProcessState,
+      });
 
-    setProcessState(nextProcessState);
-    setHealth(nextHealth);
-    setStatus(nextStatus);
+      setProcessState(nextProcessState);
+      setHealth(nextHealth);
+      setStatus(nextStatus);
 
-    if (!silent) {
-      const label = STATUS_META[nextStatus]?.label || "Status desconhecido";
-      addEvent("info", `Leitura local atualizada: ${label}.`);
+      if (!silent) {
+        const label = STATUS_META[nextStatus]?.label || "Status desconhecido";
+        addEvent("info", `Leitura local atualizada: ${label}.`);
+      }
+
+      if (includeLogs) {
+        await refreshLogs();
+      }
+    } finally {
+      refreshingRef.current = false;
+      if (!silent) setBusyAction("");
     }
-
-    if (includeLogs) {
-      await refreshLogs();
-    }
-
-    if (!silent) setBusyAction("");
   }, [addEvent, refreshLogs]);
 
   useEffect(() => {
+    const onVisibilityChange = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
     refreshStatus({ silent: true, includeLogs: true });
+  }, [refreshStatus]);
 
-    const statusTimer = window.setInterval(() => {
-      refreshStatus({ silent: true });
-    }, 2500);
+  useEffect(() => {
+    if (!visible) return undefined;
 
-    const logsTimer = window.setInterval(() => {
-      refreshLogs();
-    }, 7000);
+    let cancelled = false;
+    let timer = null;
+
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        await refreshStatus({ silent: true });
+        if (!cancelled) schedule();
+      }, pollingInterval);
+    };
+
+    schedule();
 
     return () => {
-      window.clearInterval(statusTimer);
-      window.clearInterval(logsTimer);
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
     };
-  }, [refreshLogs, refreshStatus]);
+  }, [pollingInterval, refreshStatus, visible]);
+
+  useEffect(() => {
+    if (!logsOpen || !visible) return undefined;
+
+    const timer = window.setInterval(() => {
+      refreshLogs();
+    }, 10000);
+
+    return () => window.clearInterval(timer);
+  }, [logsOpen, refreshLogs, visible]);
 
   const metrics = useMemo(() => [
     {
+      label: "Connect",
+      value: "Pronto",
+      foot: `v${CONNECT_VERSION} | Windows local`,
+      tone: "success",
+    },
+    {
       label: "Processo",
       value: getProcessOrigin(processState),
-      foot: processState?.managedPid ? `PID ${processState.managedPid}` : "Sem PID gerenciado",
-    },
-    {
-      label: "Porta local",
-      value: processState?.portOpen ? "Ocupada" : "Livre",
-      foot: `127.0.0.1:${processState?.port || 47851}`,
-    },
-    {
-      label: "Configuracao",
-      value: health?.configurado ? "Pareado" : "Pendente",
-      foot: "Token nunca aparece nesta tela",
+      foot: processState?.managedPid ? `PID ${processState.managedPid}` : `127.0.0.1:${processState?.port || LOCAL_AGENT_PORT}`,
+      tone: processState?.externalRunning ? "info" : processState?.managedRunning ? "success" : "neutral",
     },
     {
       label: "WhatsApp",
       value: whatsappFlags.connected
-        ? "Online"
+        ? "Pronto"
         : whatsappFlags.authenticated
-          ? "Autenticado"
+          ? "Autenticando"
           : whatsappFlags.waitingQr
             ? "Aguardando QR"
-            : "Offline",
-      foot: health?.navegador_local ? "Navegador local detectado" : "Chrome/Edge ainda nao confirmado",
+            : "Pendente",
+      foot: account.phone !== "-" ? account.phone : "Sem numero conectado",
+      tone: whatsappFlags.connected ? "success" : whatsappFlags.waitingQr ? "warning" : "neutral",
     },
-  ], [health, processState, whatsappFlags.authenticated, whatsappFlags.connected, whatsappFlags.waitingQr]);
-
-  const latestAgentLogs = agentLogs.entries.slice(0, 8);
+    {
+      label: "Ultima sinc.",
+      value: formatDate(health?.atualizado_em),
+      foot: health?.ultimo_evento || "Aguardando evento local",
+      tone: "info",
+    },
+  ], [
+    account.phone,
+    health?.atualizado_em,
+    health?.ultimo_evento,
+    processState,
+    whatsappFlags.authenticated,
+    whatsappFlags.connected,
+    whatsappFlags.waitingQr,
+  ]);
 
   async function runAction(action, eventMessage, callback) {
     setBusyAction(action);
+    setDiagnosticCopied(false);
     try {
       const result = await callback();
       if (result?.message) {
@@ -264,7 +493,7 @@ function App() {
       await refreshStatus({ silent: true, includeLogs: true });
     } catch (error) {
       addEvent("error", error.message || "Acao local falhou.");
-      setStatus("ERROR");
+      setStatus(AGENT_STATUS.ERROR);
     } finally {
       setBusyAction("");
     }
@@ -283,7 +512,84 @@ function App() {
   }
 
   async function handleDisconnect() {
+    const confirmed = window.confirm(
+      "Desconectar o WhatsApp desta oficina agora? A sessao atual sera encerrada e um novo QR pode ser necessario."
+    );
+    if (!confirmed) return;
     await runAction("disconnect", "Sessao WhatsApp desconectada.", disconnectLocalAgent);
+  }
+
+  async function handlePrimaryAction() {
+    if (primaryAction.action === "panel") {
+      await openExternalUrl(PANEL_URL);
+      return;
+    }
+
+    if (primaryAction.action === "refresh") {
+      await refreshStatus({ includeLogs: true });
+      return;
+    }
+
+    if (primaryAction.action === "restart") {
+      await handleRestartAgent();
+      return;
+    }
+
+    if (primaryAction.action === "start") {
+      await handleStartAgent();
+    }
+  }
+
+  async function handleCopyDiagnostic() {
+    const diagnostics = {
+      generated_at: new Date().toISOString(),
+      connect_version: CONNECT_VERSION,
+      agent_version: health?.versao || null,
+      status,
+      status_label: meta.label,
+      process_origin: getProcessOrigin(processState),
+      managed_pid: processState?.managedPid || null,
+      managed_by_connect: Boolean(health?.managed_by_connect),
+      port: processState?.port || LOCAL_AGENT_PORT,
+      port_open: Boolean(processState?.portOpen),
+      external_running: Boolean(processState?.externalRunning),
+      whatsapp_connected: whatsappFlags.connected,
+      whatsapp_authenticated: whatsappFlags.authenticated,
+      waiting_qr: whatsappFlags.waitingQr,
+      session_expired: whatsappFlags.sessionExpired,
+      qr_expired: whatsappFlags.qrExpired,
+      whatsapp_state: health?.whatsapp_state || null,
+      account_name: account.name,
+      account_phone: account.phone,
+      last_event: health?.ultimo_evento || null,
+      last_error: health?.erro_ultimo || null,
+      log_path: agentLogs.logPath || processState?.paths?.logPath || null,
+      os: navigator.userAgent,
+      recent_events: events.slice(0, 8).map((event) => ({
+        at: event.at,
+        level: event.level,
+        message: event.message,
+      })),
+      recent_agent_logs: latestAgentLogs.slice(0, 8).map((entry) => ({
+        at: entry.at,
+        level: entry.level,
+        message: entry.message,
+      })),
+    };
+
+    const text = sanitizeDiagnostic(JSON.stringify(diagnostics, null, 2));
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard indisponivel neste ambiente.");
+      }
+      await navigator.clipboard.writeText(text);
+      setDiagnosticCopied(true);
+      addEvent("info", "Diagnostico copiado sem tokens nem QR.");
+    } catch (error) {
+      setDiagnosticCopied(false);
+      addEvent("warn", error.message || "Nao foi possivel copiar o diagnostico.");
+    }
   }
 
   return (
@@ -312,11 +618,19 @@ function App() {
           </button>
         </nav>
 
+        <div className="connect-readiness">
+          <span className={getToneDot("success")} />
+          <div>
+            <strong>Connect pronto</strong>
+            <small>Centro local oficial do WhatsApp RiverLub.</small>
+          </div>
+        </div>
+
         <div className="side-note">
-          <span>Windows primeiro</span>
-          <strong>Controle local seguro</strong>
+          <span>Seguranca local</span>
+          <strong>Sem terminal para a oficina</strong>
           <small>
-            Mantem o fluxo .cmd existente e so encerra processos criados pelo Connect.
+            O Connect so encerra processos que ele criou e mantem o QR restrito a 127.0.0.1.
           </small>
         </div>
       </aside>
@@ -324,78 +638,81 @@ function App() {
       <section className="main-panel">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Integracoes locais</p>
-            <h1>RiverLub Connect</h1>
+            <p className="eyebrow">WhatsApp local</p>
+            <h1>Central RiverLub Connect</h1>
             <p className="intro">
-              Controle desktop para iniciar, monitorar e operar o agente WhatsApp da oficina.
+              Inicie o agente, leia o QR real e acompanhe a sessao da oficina em um unico lugar.
             </p>
           </div>
-          <div className={`status-pill ${meta.tone}`}>
+          <div className={`status-pill ${meta.tone}`} aria-live="polite">
             <Activity size={18} />
             {meta.label}
           </div>
         </header>
 
         <section className={`status-band ${meta.tone}`}>
-          <div>
+          <div className="status-copy">
             <p className="eyebrow">Status atual</p>
             <h2>{meta.label}</h2>
             <p>{health?.erro_ultimo || meta.detail}</p>
+            {processState?.externalRunning ? (
+              <small>
+                Agente externo detectado. Por seguranca, o Connect nao vai encerrar esse processo.
+              </small>
+            ) : null}
           </div>
-          <div className="action-row">
+
+          <div className="action-cluster">
             <button
-              className="btn primary"
+              className="btn primary cta"
               type="button"
-              onClick={handleStartAgent}
-              disabled={isBusy || processState?.managedRunning || processState?.externalRunning}
-              title={processState?.externalRunning ? "Agente externo ja esta usando a porta local" : "Iniciar agente"}
+              onClick={handlePrimaryAction}
+              disabled={isBusy || primaryAction.disabled}
             >
-              <Power size={17} />
-              Iniciar
+              {isBusy && busyAction !== "refresh" ? <Loader2 className="spin" size={18} /> : <PlayCircle size={18} />}
+              {primaryAction.label}
             </button>
-            <button
-              className="btn secondary"
-              type="button"
-              onClick={handleStopAgent}
-              disabled={isBusy || !processState?.managedRunning}
-              title="Para apenas o processo iniciado pelo Connect"
-            >
-              <Square size={15} />
-              Parar
-            </button>
-            <button
-              className="btn secondary"
-              type="button"
-              onClick={handleRestartAgent}
-              disabled={isBusy || processState?.externalRunning}
-            >
-              <RefreshCw size={17} />
-              Reiniciar
-            </button>
-            <button
-              className="btn danger"
-              type="button"
-              onClick={handleDisconnect}
-              disabled={isBusy || !health?.instalado}
-            >
-              <LogOut size={17} />
-              Desconectar
-            </button>
-            <button
-              className="btn ghost"
-              type="button"
-              onClick={() => setLogsOpen((open) => !open)}
-            >
-              <FileText size={17} />
-              Logs
-            </button>
+            <div className="action-row">
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={handleRestartAgent}
+                disabled={isBusy || processState?.externalRunning}
+                title="Reinicia apenas o processo gerenciado pelo Connect"
+              >
+                <RefreshCw size={17} />
+                Reiniciar agente
+              </button>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={handleStopAgent}
+                disabled={isBusy || !processState?.managedRunning}
+                title="Para apenas o processo iniciado pelo Connect"
+              >
+                <Square size={15} />
+                Parar agente
+              </button>
+              <button
+                className="btn danger"
+                type="button"
+                onClick={handleDisconnect}
+                disabled={isBusy || !health?.instalado || processState?.externalRunning}
+              >
+                <LogOut size={17} />
+                Desconectar
+              </button>
+            </div>
           </div>
         </section>
 
         <section className="metric-grid" aria-label="Resumo local">
           {metrics.map((item) => (
             <article className="metric-card" key={item.label}>
-              <span>{item.label}</span>
+              <div className="metric-head">
+                <span>{item.label}</span>
+                <i className={getToneDot(item.tone)} aria-hidden="true" />
+              </div>
               <strong>{item.value}</strong>
               <small>{item.foot}</small>
             </article>
@@ -414,13 +731,14 @@ function App() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Pareamento</p>
-                <h2>QR Code</h2>
+                <h2>QR Code real</h2>
               </div>
               <span className={`qr-state-pill ${qrPanelState.tone}`}>
-                <QrCode size={17} />
+                {qrPanelState.loading ? <Loader2 className="spin" size={17} /> : <QrCode size={17} />}
                 {qrPanelState.label}
               </span>
             </div>
+
             <div className={qrDataUrl ? "qr-live" : "qr-placeholder"}>
               {qrDataUrl ? (
                 <>
@@ -433,7 +751,7 @@ function App() {
                 </>
               ) : (
                 <>
-                  <div className="qr-box" aria-hidden="true">
+                  <div className={qrPanelState.loading ? "qr-skeleton active" : "qr-box"} aria-hidden="true">
                     <span />
                     <span />
                     <span />
@@ -448,7 +766,7 @@ function App() {
           <div className="details-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">Agente atual</p>
+                <p className="eyebrow">Conta e diagnostico</p>
                 <h2>Leitura local</h2>
               </div>
               <button
@@ -462,106 +780,170 @@ function App() {
               </button>
             </div>
 
-            <dl className="detail-list">
+            <dl className="detail-list compact">
+              <div>
+                <dt>Conta conectada</dt>
+                <dd>{account.name}</dd>
+              </div>
+              <div>
+                <dt>Numero conectado</dt>
+                <dd>{account.phone}</dd>
+              </div>
+              <div>
+                <dt>Pronto para envio</dt>
+                <dd>{whatsappFlags.connected ? "Sim" : "Nao"}</dd>
+              </div>
               <div>
                 <dt>Origem do processo</dt>
                 <dd>{getProcessOrigin(processState)}</dd>
               </div>
               <div>
-                <dt>Inicio gerenciado</dt>
-                <dd>{formatTimestampMs(processState?.managedStartedAtMs)}</dd>
-              </div>
-              <div>
-                <dt>API configurada</dt>
-                <dd>{health?.apiUrl || "-"}</dd>
-              </div>
-              <div>
-                <dt>Ultimo evento</dt>
-                <dd>{health?.ultimo_evento || "-"}</dd>
-              </div>
-              <div>
-                <dt>Ultimo QR</dt>
-                <dd>{formatDate(health?.ultimo_qr_em)}</dd>
-              </div>
-              <div>
-                <dt>QR expira em</dt>
-                <dd>{formatDate(health?.qr_expira_em)}</dd>
+                <dt>Versao do agente</dt>
+                <dd>{health?.versao || "-"}</dd>
               </div>
               <div>
                 <dt>Estado WhatsApp</dt>
                 <dd>{health?.whatsapp_state || health?.whatsappState || "-"}</dd>
               </div>
               <div>
-                <dt>Autenticado</dt>
-                <dd>{whatsappFlags.authenticated ? "Sim" : "Nao"}</dd>
+                <dt>Ultimo evento</dt>
+                <dd>{health?.ultimo_evento || "-"}</dd>
               </div>
               <div>
-                <dt>Sessao expirada</dt>
-                <dd>{whatsappFlags.sessionExpired ? "Sim" : "Nao"}</dd>
+                <dt>Ultima sincronizacao</dt>
+                <dd>{formatDate(health?.atualizado_em)}</dd>
               </div>
               <div>
-                <dt>Config local</dt>
-                <dd>{processState?.paths?.configPath || "-"}</dd>
+                <dt>Log local</dt>
+                <dd>{agentLogs.logPath || processState?.paths?.logPath || "-"}</dd>
+              </div>
+            </dl>
+
+            <div className="utility-row">
+              <button className="btn secondary" type="button" onClick={handleCopyDiagnostic}>
+                <Copy size={17} />
+                {diagnosticCopied ? "Diagnostico copiado" : "Copiar diagnostico"}
+              </button>
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => openExternalUrl(PANEL_URL)}
+              >
+                <ExternalLink size={17} />
+                Abrir painel RiverLub
+              </button>
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => openExternalUrl(RELEASE_URL)}
+              >
+                <Download size={17} />
+                Instalador
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="ops-grid">
+          <div className="next-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Proximos passos</p>
+                <h2>Orientacao da oficina</h2>
+              </div>
+              <CheckCircle2 size={20} />
+            </div>
+            <ol className="next-list">
+              {nextSteps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+          </div>
+
+          <div className="runtime-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Runtime</p>
+                <h2>Controle seguro</h2>
+              </div>
+              <Clock3 size={20} />
+            </div>
+            <dl className="detail-list compact">
+              <div>
+                <dt>Porta local</dt>
+                <dd>127.0.0.1:{processState?.port || LOCAL_AGENT_PORT}</dd>
+              </div>
+              <div>
+                <dt>Polling atual</dt>
+                <dd>{visible ? `${pollingInterval} ms` : "Pausado com a janela oculta"}</dd>
+              </div>
+              <div>
+                <dt>Inicio gerenciado</dt>
+                <dd>{formatTimestampMs(processState?.managedStartedAtMs)}</dd>
               </div>
               <div>
                 <dt>Sessao LocalAuth</dt>
                 <dd>{processState?.paths?.sessionPath || "-"}</dd>
               </div>
-              <div>
-                <dt>Arquivo do agente</dt>
-                <dd>{processState?.paths?.agentEntry || "-"}</dd>
-              </div>
             </dl>
           </div>
         </section>
 
-        {logsOpen ? (
-          <section className="logs-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Observabilidade local</p>
-                <h2>Logs recentes</h2>
-              </div>
+        <section className="logs-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Observabilidade local</p>
+              <h2>Eventos e logs</h2>
+            </div>
+            <div className="mini-actions">
               <button className="text-btn" type="button" onClick={refreshLogs}>
+                <FileText size={16} />
                 Atualizar logs
               </button>
+              <button className="text-btn" type="button" onClick={() => setLogsOpen((open) => !open)}>
+                {logsOpen ? "Ocultar" : "Ver logs"}
+              </button>
             </div>
+          </div>
 
-            <div className="log-path">
-              {agentLogs.logPath || processState?.paths?.logPath || "Log ainda nao localizado"}
-            </div>
+          {logsOpen ? (
+            <>
+              <div className="log-path">
+                {agentLogs.logPath || processState?.paths?.logPath || "Log ainda nao localizado"}
+              </div>
 
-            <div className="event-list">
-              {latestAgentLogs.length === 0 ? (
-                <p className="empty-log">
-                  Nenhum log do agente encontrado ainda. Ao iniciar o agente, os eventos aparecem aqui.
-                </p>
-              ) : (
-                latestAgentLogs.map((entry, index) => (
-                  <div
-                    className={`event-row ${entry.level}`}
-                    key={`${entry.at || "log"}-${entry.message}-${index}`}
-                  >
-                    <time>{formatDate(entry.at)}</time>
-                    <span>
-                      {entry.message}
-                      {entry.extra ? <small>{String(entry.extra)}</small> : null}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
+              <div className="event-list">
+                {latestAgentLogs.length === 0 ? (
+                  <p className="empty-log">
+                    Nenhum log do agente encontrado ainda. Ao iniciar o agente, os eventos aparecem aqui.
+                  </p>
+                ) : (
+                  latestAgentLogs.map((entry, index) => (
+                    <div
+                      className={`event-row ${entry.level}`}
+                      key={`${entry.at || "log"}-${entry.message}-${index}`}
+                    >
+                      <time>{formatDate(entry.at)}</time>
+                      <span>
+                        {sanitizeDiagnostic(entry.message)}
+                        {entry.extra ? <small>{sanitizeDiagnostic(entry.extra)}</small> : null}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </>
+          ) : null}
 
-            <div className="event-list screen-events">
-              {events.slice(0, 5).map((event) => (
-                <div className={`event-row ${event.level}`} key={`${event.at}-${event.message}`}>
-                  <time>{formatDate(event.at)}</time>
-                  <span>{event.message}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
+          <div className="event-list screen-events">
+            {events.slice(0, 6).map((event) => (
+              <div className={`event-row ${event.level}`} key={`${event.at}-${event.message}`}>
+                <time>{formatDate(event.at)}</time>
+                <span>{event.message}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       </section>
     </main>
   );

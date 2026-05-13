@@ -191,6 +191,16 @@ fn request_local_agent(method: &str, path: &str) -> Result<serde_json::Value, St
     Ok(payload)
 }
 
+fn is_allowed_external_url(url: &str) -> bool {
+    let value = url.trim().to_ascii_lowercase();
+
+    value.starts_with("https://app.riverlub.com.br/")
+        || value == "https://app.riverlub.com.br"
+        || value.starts_with("https://riverlub-frontend-vercel.vercel.app/")
+        || value == "https://riverlub-frontend-vercel.vercel.app"
+        || value.starts_with("https://github.com/jhefersonalvez2-netizen/riverlub-connect/")
+}
+
 fn current_managed_process(
     state: &AgentProcessState,
 ) -> Result<(bool, Option<u32>, Option<u128>), String> {
@@ -341,6 +351,11 @@ fn local_agent_health() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn local_agent_qr() -> Result<serde_json::Value, String> {
+    request_local_agent("GET", "/qr")
+}
+
+#[tauri::command]
 fn disconnect_agent_session() -> Result<serde_json::Value, String> {
     request_local_agent("POST", "/desconectar")
 }
@@ -424,17 +439,59 @@ fn read_agent_logs(limit: Option<usize>) -> Result<AgentLogResponse, String> {
     })
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = url.trim().to_string();
+
+    if !is_allowed_external_url(&url) {
+        return Err("URL externa nao permitida pelo RiverLub Connect.".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| format!("Nao foi possivel abrir o navegador: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| format!("Nao foi possivel abrir o navegador: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| format!("Nao foi possivel abrir o navegador: {error}"))?;
+        return Ok(());
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(AgentProcessState::default())
         .invoke_handler(tauri::generate_handler![
             agent_process_status,
             local_agent_health,
+            local_agent_qr,
             disconnect_agent_session,
             start_agent_process,
             stop_agent_process,
             restart_agent_process,
-            read_agent_logs
+            read_agent_logs,
+            open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar RiverLub Connect");

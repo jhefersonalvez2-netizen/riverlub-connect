@@ -41,6 +41,14 @@ export async function getLocalAgentHealth() {
   return fetchLocalAgent("/health");
 }
 
+export async function getLocalAgentQr() {
+  if (isTauriRuntime()) {
+    return invoke("local_agent_qr");
+  }
+
+  return fetchLocalAgent("/qr");
+}
+
 export async function disconnectLocalAgent() {
   if (isTauriRuntime()) {
     return invoke("disconnect_agent_session");

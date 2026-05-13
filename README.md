@@ -1,116 +1,101 @@
 # RiverLub Connect
 
-RiverLub Connect e o aplicativo desktop local do RiverLub para Windows. Nesta fase, ele e uma base Tauri v2 isolada que nao altera o RiverLub Web, o backend Render, nem o banco Supabase.
+RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLub no Windows. Nesta fase ele passa a ser o centro do fluxo do WhatsApp da oficina: inicia o agente local, mostra o QR real, acompanha a sessao, le logs e protege o usuario final de terminal, `.cmd` e detalhes tecnicos.
 
-## Objetivo
+## O que o Connect faz agora
 
-- Substituir futuramente o instalador `.cmd` do agente WhatsApp por um app instalavel.
-- Rodar integracoes locais sem terminal visivel.
-- Preparar base para WhatsApp, impressoras, notificacoes locais, modo offline e futuras automacoes.
-- Manter o painel Web como sistema principal.
+- Controla o agente `backend/whatsapp-agent` por comandos Tauri nativos.
+- Inicia o agente sem terminal visivel.
+- Para somente processos criados pelo Connect.
+- Detecta agente externo na porta `47851` sem encerrar o processo legado.
+- Consulta `GET http://127.0.0.1:47851/health` e `GET /qr`.
+- Renderiza `qr_data_url` dentro do app desktop.
+- Atualiza status automaticamente com polling adaptativo.
+- Mostra conta, numero conectado, versao do agente, porta local, caminhos de sessao/log e eventos recentes.
+- Copia diagnostico sanitizado, sem token e sem QR.
+- Mantem o painel Web apenas como status, atalho e download.
 
-## Diagnostico do WhatsApp atual
+## Fluxo tecnico
 
-O fluxo atual ja esta maduro o bastante para ser reaproveitado pelo Connect:
+1. O usuario abre o RiverLub Connect.
+2. Clica em **Conectar WhatsApp**.
+3. Se o agente nao estiver rodando, o Connect inicia `node src/index.js` em `backend/whatsapp-agent`.
+4. O agente abre `whatsapp-web.js` com `LocalAuth` usando `%APPDATA%/RiverLub/whatsapp-agent/session`.
+5. Quando o WhatsApp emite `qr`, o agente gera `qr_data_url`, guarda em memoria e expoe em `GET /qr` e `GET /health`.
+6. O Connect mostra o QR real.
+7. Ao autenticar, o QR some e o status passa por `Autenticando` ate `WhatsApp conectado`.
+8. Com `ready`, o agente envia `telefone_conectado` e `nome_conta` ao backend e tambem retorna esses dados no status local.
 
-- Agente atual: `backend/whatsapp-agent/src/index.js`.
-- Instalador atual: `frontend/public/riverlub-agent/instalar-riverlub-whatsapp.cmd`.
-- Tela Web atual: `frontend/src/app/whatsapp/page.js`.
-- Backend: `backend/src/routes/whatsapp.js`, `backend/src/services/whatsappAgent.js` e `backend/src/services/whatsappBridgeLocal.js`.
-- Engine WhatsApp: `whatsapp-web.js` com `LocalAuth`, `qrcode`, `qrcode-terminal` e Puppeteer.
-- Servidor local: `http://127.0.0.1:47851`.
-- Sessao local: `%APPDATA%/RiverLub/whatsapp-agent/session`.
-- Config local: `%APPDATA%/RiverLub/whatsapp-agent/config.json`.
-- Logs: `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
-- Status remoto: `POST /api/whatsapp/agente/ping`.
-- Fila de envio: `POST /api/whatsapp/agente/jobs/proximo`.
-- Conclusao de jobs: `POST /api/whatsapp/agente/jobs/:id/concluir`.
-- Desconexao: `POST /api/whatsapp/ponte/desconectar` no backend e `POST /desconectar` no agente local.
+## Seguranca
 
-O token do agente e criado pelo backend em `POST /api/whatsapp/ponte/ativar`, salvo localmente pelo agente e enviado ao backend como `Authorization: Bearer <token>`. A UI nao deve exibir esse token.
+- QR e texto bruto do QR ficam apenas no localhost e em memoria.
+- O servidor local escuta somente em `127.0.0.1:47851`.
+- O Connect nao exibe `agentToken`.
+- Diagnosticos sanitizam tokens, `Bearer` e `data:image`.
+- Desconectar WhatsApp exige confirmacao.
+- Parar agente afeta somente processo iniciado pelo Connect.
+- Agente externo iniciado por `.cmd` ou terminal e monitorado, mas nao encerrado.
+- Deep link futuro nao deve executar acoes perigosas sozinho; deve apenas abrir a tela certa.
 
-## Plano tecnico
-
-### Fase 1: base isolada
-
-Feito nesta pasta:
-
-- App Tauri v2 com React + Vite.
-- Tela inicial premium RiverLub.
-- Status visual: parado, iniciando, aguardando QR, conectado e erro.
-- Leitura segura do agente atual via `GET http://127.0.0.1:47851/health`.
-- Botao de desconectar chamando `POST http://127.0.0.1:47851/desconectar`.
-- Logs de interface em memoria, sem ler arquivos locais ainda.
-- Bundle preparado para NSIS (`RiverLub Connect Setup`) quando o ambiente Rust estiver pronto.
-
-### Fase 2: gerenciamento local do agente
-
-Feito nesta fase:
-
-- Comandos Tauri nativos para consultar processo, porta, caminhos locais e logs.
-- Inicio do agente atual em `backend/whatsapp-agent/src/index.js` por `node src/index.js`.
-- Processo iniciado sem terminal visivel no Windows.
-- Parada segura limitada ao processo criado pelo Connect.
-- Deteccao de agente externo iniciado pelo `.cmd` ou terminal, sem encerrar esse processo.
-- Leitura nativa de `GET /health` e `POST /desconectar` em `127.0.0.1:47851`, evitando problema de CORS da WebView.
-- Logs recentes lidos de `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
-- UI com estados: parado, iniciando, aguardando QR, conectado, reconectando, desconectado, erro e agente externo.
-- QR Code real do `whatsapp-web.js` lido do servidor local do agente, com expiracao curta e renderizacao dentro do card de pareamento.
-- Estados especificos de pareamento: aguardando QR, QR disponivel, autenticado, conectado e sessao expirada.
-
-O `@tauri-apps/plugin-shell` ainda nao foi instalado nesta fase porque o agente atual continua sendo um app Node em pasta irma do repo. Para usar sidecar corretamente, o binario precisa estar declarado no bundle/capabilities do Tauri e empacotado junto do instalador. A abstracao criada em `src/agent` deixa essa troca preparada.
-
-### Fase 3: sidecar do agente
-
-Proxima implementacao recomendada:
-
-- Extrair `backend/whatsapp-agent` para um pacote controlavel pelo Connect.
-- Empacotar o agente como sidecar Tauri.
-- Usar plugin shell do Tauri para iniciar, reiniciar e encerrar o processo sem terminal.
-- Manter logs em `%APPDATA%/RiverLub/connect/logs`.
-- Preservar a sessao atual em `%APPDATA%/RiverLub/whatsapp-agent/session` ou migrar com cuidado.
-
-### Fase 4: pareamento nativo
-
-- Web gera codigo temporario de pareamento.
-- Connect recebe o codigo.
-- Backend valida codigo e devolve token do agente.
-- Connect salva token localmente sem expor na UI.
-- Status continua aparecendo no painel Web.
-
-### Fase 5: instalador
-
-- Gerar `RiverLub-Connect-Setup.exe` via Tauri/NSIS.
-- Assinar o executavel para reduzir bloqueios de antivirus e SmartScreen.
-- Manter o `.cmd` antigo disponivel ate o Connect estar validado em oficinas reais.
-
-## Como rodar em desenvolvimento
-
-Requisitos:
-
-- Node.js LTS.
-- Rust instalado.
-- Dependencias de Windows exigidas pelo Tauri v2.
-
-Comandos:
+## Scripts
 
 ```powershell
 npm install
 npm run dev
+npm run build:ui
+npm run tauri:build
+npm run package
 ```
 
-Gerar instalador local:
+`npm run tauri:build` e `npm run package` geram o instalador NSIS do Windows. O artefato fica em:
 
-```powershell
-npm run build
+```text
+src-tauri/target/release/bundle/nsis
 ```
 
-O instalador Tauri/NSIS ficara em `src-tauri/target/release/bundle/nsis` quando o build for concluido.
+Nao commitar `node_modules`, `dist`, `src-tauri/target`, `.cargo-*-target`, instaladores ou builds.
 
-## Riscos
+## Distribuicao
 
-- `whatsapp-web.js` depende de Puppeteer/Chromium e pode aumentar o tamanho do app.
-- Antiviruses podem continuar sensiveis ate haver assinatura digital.
-- Sidecar Node precisa ser empacotado com cuidado para nao depender de terminal ou PATH do usuario.
-- QR Code real fica somente no agente local em memoria e expira automaticamente; o Connect consulta `GET /health` e tambem pode consultar `GET /qr`.
-- Desconectar e uma acao real quando o agente atual estiver rodando.
+O painel Web aponta para a release do GitHub:
+
+```text
+https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest
+```
+
+Quando o instalador final estiver assinado, publique o `.exe` nessa release. Alternativamente, configure `NEXT_PUBLIC_RIVERLUB_CONNECT_DOWNLOAD_URL` no frontend para apontar para um CDN ou arquivo estatico como:
+
+```text
+public/downloads/RiverLub-Connect-Setup.exe
+```
+
+O binario pesado nao deve ser versionado no Git sem decisao explicita.
+
+## Deep link
+
+O painel Web ja tenta abrir:
+
+```text
+riverlub-connect://open/whatsapp
+```
+
+Nesta fase o fallback visual ja esta pronto. O registro real do protocolo deve entrar junto do instalador profissional, preferencialmente com o plugin oficial de deep link do Tauri e tratamento restrito a abrir a tela WhatsApp, sem aceitar comandos destrutivos nem tokens pela URL.
+
+## Instalador profissional final
+
+Base atual:
+
+- Tauri v2.
+- Bundle NSIS ativo.
+- Instalacao por usuario atual.
+- Pasta Start Menu `RiverLub`.
+- Downgrade bloqueado.
+
+Pendencias antes de entregar em massa:
+
+- Assinatura digital do executavel.
+- Registro oficial do protocolo `riverlub-connect://`.
+- Empacotar o agente como sidecar ou runtime controlado, sem depender de Node no PATH.
+- Decidir se Puppeteer/Chromium sera embutido ou se Chrome/Edge local sera requisito.
+- Pipeline de release no GitHub.
+- Teste em Windows limpo, usuario sem permissao admin, SmartScreen e antivirus.

@@ -1,6 +1,8 @@
 export const AGENT_STATUS = {
+  READY: "READY",
   STOPPED: "STOPPED",
   STARTING: "STARTING",
+  RUNNING: "RUNNING",
   WAITING_QR: "WAITING_QR",
   QR_READY: "QR_READY",
   AUTHENTICATED: "AUTHENTICATED",
@@ -13,15 +15,25 @@ export const AGENT_STATUS = {
 };
 
 export const STATUS_META = {
+  [AGENT_STATUS.READY]: {
+    label: "Connect pronto",
+    tone: "success",
+    detail: "RiverLub Connect aberto e pronto para controlar o WhatsApp da oficina.",
+  },
   [AGENT_STATUS.STOPPED]: {
     label: "Agente parado",
     tone: "neutral",
     detail: "Nenhum agente local respondeu neste computador.",
   },
   [AGENT_STATUS.STARTING]: {
-    label: "Iniciando",
+    label: "Iniciando agente",
     tone: "info",
     detail: "O agente local esta abrindo o servidor e preparando a sessao.",
+  },
+  [AGENT_STATUS.RUNNING]: {
+    label: "Agente rodando",
+    tone: "info",
+    detail: "O servidor local esta ativo. O WhatsApp sera controlado por esta tela.",
   },
   [AGENT_STATUS.WAITING_QR]: {
     label: "Aguardando QR Code",
@@ -34,7 +46,7 @@ export const STATUS_META = {
     detail: "Abra o WhatsApp no celular e leia o QR Code exibido no Connect.",
   },
   [AGENT_STATUS.AUTHENTICATED]: {
-    label: "Sessao autenticada",
+    label: "Autenticando",
     tone: "info",
     detail: "QR lido com sucesso. O WhatsApp Web esta sincronizando a sessao.",
   },
@@ -117,6 +129,7 @@ export function getAgentStatus({ health, processState }) {
   const waitingQr = Boolean(health?.waiting_qr || health?.waitingQr);
   const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
   const sessionExpired = Boolean(health?.session_expired || health?.sessionExpired);
+  const qrExpired = Boolean(health?.qr_expirado_em || health?.qrExpiradoEm);
 
   if (connected) {
     return AGENT_STATUS.CONNECTED;
@@ -150,12 +163,12 @@ export function getAgentStatus({ health, processState }) {
     return AGENT_STATUS.WAITING_QR;
   }
 
-  if (health?.instalado && health?.configurado) {
+  if (health?.instalado && health?.configurado && !qrExpired) {
     return AGENT_STATUS.DISCONNECTED;
   }
 
   if (health?.instalado) {
-    return managedRunning ? AGENT_STATUS.STARTING : AGENT_STATUS.DISCONNECTED;
+    return managedRunning ? AGENT_STATUS.RUNNING : AGENT_STATUS.DISCONNECTED;
   }
 
   if (managedRunning) {

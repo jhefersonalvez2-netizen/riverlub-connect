@@ -68,4 +68,6 @@
 - O processo iniciado pelo Connect usa a mesma porta, config, sessao LocalAuth e log do agente atual.
 - O Connect nao mata processos externos: se a porta 47851 ja estiver ocupada pelo `.cmd`, ele apenas monitora.
 - Logs recentes sao lidos de `%APPDATA%/RiverLub/whatsapp-agent/logs/agent.log`.
-- O QR Code nativo esta preparado na UI, mas ainda depende do agente expor `qr_data_url` localmente ou do pareamento autenticado com backend.
+- O QR Code nativo agora e exibido pelo Connect a partir de `GET /qr` e `GET /health`.
+- O painel Web deixou de ser o centro tecnico do pareamento: ele mostra status, abre o Connect e mantem o `.cmd` apenas como fallback avancado.
+- O deep link `riverlub-connect://open/whatsapp` ja e usado pelo Web como tentativa de abertura, mas o registro real do protocolo deve entrar no instalador final.
