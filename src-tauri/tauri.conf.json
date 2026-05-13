@@ -1,0 +1,37 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "RiverLub Connect",
+  "version": "0.1.0",
+  "identifier": "br.com.riverlub.connect",
+  "build": {
+    "beforeDevCommand": "npm run dev:ui",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build:ui",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "RiverLub Connect",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:47851 http://localhost:47851"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "RiverLub",
+    "category": "Business",
+    "shortDescription": "Integracoes locais do RiverLub",
+    "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows."
+  }
+}
+

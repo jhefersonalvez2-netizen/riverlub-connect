@@ -1,0 +1,21 @@
+[package]
+name = "riverlub-connect"
+version = "0.1.0"
+description = "RiverLub Connect"
+authors = ["RiverLub"]
+license = "UNLICENSED"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "riverlub_connect_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+
