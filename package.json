@@ -5,6 +5,7 @@
   "description": "Aplicativo desktop local para integracoes RiverLub",
   "type": "module",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
     "dev:ui": "vite --host 127.0.0.1 --port 1420",
@@ -23,4 +24,3 @@
     "vite": "^7.0.0"
   }
 }
-
