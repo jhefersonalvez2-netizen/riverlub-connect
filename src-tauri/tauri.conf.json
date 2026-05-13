@@ -48,7 +48,8 @@
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
-        "startMenuFolder": "RiverLub"
+        "startMenuFolder": "RiverLub",
+        "installerHooks": "nsis-hooks.nsh"
       }
     }
   }

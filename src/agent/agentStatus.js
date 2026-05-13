@@ -124,15 +124,27 @@ export function getAgentStatus({ health, processState }) {
   const portOpen = Boolean(processState?.portOpen);
   const managedRunning = Boolean(processState?.managedRunning);
   const externalRunning = Boolean(processState?.externalRunning);
-  const connected = Boolean(health?.conectado || health?.connected);
+  const connected = Boolean(health?.conectado || health?.connected || health?.pronto_para_envio);
   const authenticated = Boolean(health?.authenticated);
   const waitingQr = Boolean(health?.waiting_qr || health?.waitingQr);
   const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const qrText = health?.qr_text || health?.qrText || "";
+  const qrAvailable = Boolean(health?.qr_available || health?.qrAvailable || qrDataUrl || qrText);
   const sessionExpired = Boolean(health?.session_expired || health?.sessionExpired);
-  const qrExpired = Boolean(health?.qr_expirado_em || health?.qrExpiradoEm);
+  const qrExpiresAt = health?.expires_at || health?.qr_expires_at || health?.qr_expira_em || health?.qrExpiresAt;
+  const qrExpired = Boolean(health?.qr_expirado_em || health?.qrExpiradoEm) ||
+    (qrExpiresAt ? new Date(qrExpiresAt).getTime() <= Date.now() : false);
 
   if (connected) {
     return AGENT_STATUS.CONNECTED;
+  }
+
+  if (qrExpired) {
+    return AGENT_STATUS.SESSION_EXPIRED;
+  }
+
+  if (waitingQr && qrAvailable) {
+    return AGENT_STATUS.QR_READY;
   }
 
   if (sessionExpired) {
@@ -145,10 +157,6 @@ export function getAgentStatus({ health, processState }) {
 
   if (authenticated) {
     return AGENT_STATUS.AUTHENTICATED;
-  }
-
-  if (waitingQr && qrDataUrl) {
-    return AGENT_STATUS.QR_READY;
   }
 
   if (waitingQr) {

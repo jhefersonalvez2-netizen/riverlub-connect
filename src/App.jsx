@@ -18,6 +18,8 @@ import {
   Wifi,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readAgentLogs } from "./agent/agentLogs";
 import {
@@ -82,6 +84,96 @@ function sanitizeDiagnostic(value) {
     .replace(/data:image\/[^;\s]+;base64,[A-Za-z0-9+/=]+/g, "data:image/[qr-oculto]");
 }
 
+function isValidQrDataUrl(value) {
+  return /^data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/i.test(
+    String(value || "").trim()
+  );
+}
+
+function getQrDataUrl(health) {
+  const value = health?.qr_data_url || health?.qrDataUrl || "";
+  return isValidQrDataUrl(value) ? value.trim() : "";
+}
+
+function getQrText(health) {
+  return String(health?.qr_text || health?.qrText || "").trim();
+}
+
+function getQrExpiresAt(health) {
+  return health?.expires_at || health?.qr_expires_at || health?.qr_expira_em || health?.qrExpiresAt || null;
+}
+
+function isQrExpired(health) {
+  if (health?.qr_expirado_em || health?.qrExpiradoEm || health?.qr_expired || health?.qrExpired) {
+    return true;
+  }
+
+  const expiresAt = getQrExpiresAt(health);
+  if (!expiresAt) return false;
+
+  const date = new Date(expiresAt);
+  return !Number.isNaN(date.getTime()) && date.getTime() <= Date.now();
+}
+
+async function createQrDataUrlFromText(qrText) {
+  if (!qrText) return "";
+
+  try {
+    return await QRCode.toDataURL(qrText, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 320,
+    });
+  } catch {
+    return "";
+  }
+}
+
+function shouldFetchQrPayload(health) {
+  if (!health) return false;
+
+  const connected = Boolean(health.conectado || health.connected || health.pronto_para_envio);
+  if (connected) return false;
+
+  return Boolean(
+    health.qr_available ||
+      health.qrAvailable ||
+      health.waiting_qr ||
+      health.waitingQr ||
+      getQrDataUrl(health) ||
+      getQrText(health)
+  );
+}
+
+function mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl = "") {
+  if (!healthPayload && !qrPayload) return null;
+
+  const nextHealth = { ...(healthPayload || {}) };
+
+  Object.entries(qrPayload || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      nextHealth[key] = value;
+    }
+  });
+
+  const connected = Boolean(nextHealth.conectado || nextHealth.connected || nextHealth.pronto_para_envio);
+  const qrDataUrl = getQrDataUrl(nextHealth) || generatedQrDataUrl;
+  const qrText = getQrText(nextHealth);
+  const expiresAt = getQrExpiresAt(nextHealth);
+  const qrExpired = isQrExpired(nextHealth);
+  const qrAvailable = Boolean(!connected && !qrExpired && (nextHealth.qr_available || qrDataUrl || qrText));
+
+  return {
+    ...nextHealth,
+    waiting_qr: connected ? false : Boolean(nextHealth.waiting_qr || nextHealth.waitingQr || qrAvailable),
+    qr_available: qrAvailable,
+    qr_data_url: qrAvailable ? qrDataUrl : null,
+    qr_text: qrAvailable ? qrText || null : null,
+    qr_expires_at: expiresAt,
+    expires_at: expiresAt,
+  };
+}
+
 function getHealthErrorDetail(errorType) {
   if (errorType === "auth") return "A sessao do WhatsApp precisa ser refeita.";
   if (errorType === "browser") return "Chrome, Edge ou Puppeteer nao abriu corretamente.";
@@ -91,12 +183,15 @@ function getHealthErrorDetail(errorType) {
 }
 
 function getWhatsappFlags(health) {
+  const qrAvailable = Boolean(health?.qr_available || health?.qrAvailable || getQrDataUrl(health) || getQrText(health));
+
   return {
     connected: Boolean(health?.conectado || health?.connected || health?.pronto_para_envio),
     authenticated: Boolean(health?.authenticated),
     waitingQr: Boolean(health?.waiting_qr || health?.waitingQr),
+    qrAvailable,
     sessionExpired: Boolean(health?.session_expired || health?.sessionExpired),
-    qrExpired: Boolean(health?.qr_expirado_em || health?.qrExpiradoEm),
+    qrExpired: isQrExpired(health),
   };
 }
 
@@ -127,7 +222,7 @@ function getPollingInterval(status, health) {
 }
 
 function getQrPanelState(health) {
-  const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
+  const qrDataUrl = getQrDataUrl(health);
   const flags = getWhatsappFlags(health);
 
   if (flags.connected) {
@@ -148,20 +243,20 @@ function getQrPanelState(health) {
     };
   }
 
-  if (qrDataUrl) {
-    return {
-      tone: "warning",
-      label: "QR Code disponivel",
-      message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
-      loading: false,
-    };
-  }
-
   if (flags.qrExpired) {
     return {
       tone: "danger",
       label: "QR expirado",
       message: "O QR expirou por seguranca. Clique em Reconectar para gerar um novo.",
+      loading: false,
+    };
+  }
+
+  if (qrDataUrl && flags.qrAvailable) {
+    return {
+      tone: "warning",
+      label: "QR Code disponivel",
+      message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
       loading: false,
     };
   }
@@ -326,9 +421,9 @@ function App() {
 
   const meta = STATUS_META[status] || STATUS_META.STOPPED;
   const isBusy = Boolean(busyAction);
-  const qrDataUrl = health?.qr_data_url || health?.qrDataUrl || "";
-  const qrPanelState = getQrPanelState(health);
   const whatsappFlags = getWhatsappFlags(health);
+  const qrDataUrl = whatsappFlags.qrExpired ? "" : getQrDataUrl(health);
+  const qrPanelState = getQrPanelState(health);
   const account = getAccountInfo(health);
   const errorType = classifyAgentError(health?.erro_ultimo || "");
   const primaryAction = getPrimaryAction(status, health, processState);
@@ -358,22 +453,30 @@ function App() {
     if (!silent) setBusyAction("refresh");
 
     try {
-      const [processResult, healthResult, qrResult] = await Promise.allSettled([
+      const [processResult, healthResult] = await Promise.allSettled([
         getAgentProcessStatus(),
         getLocalAgentHealth(),
-        getLocalAgentQr(),
       ]);
 
       const nextProcessState =
         processResult.status === "fulfilled" ? processResult.value : null;
       const healthPayload = healthResult.status === "fulfilled" ? healthResult.value : null;
-      const qrPayload = qrResult.status === "fulfilled" ? qrResult.value : null;
-      const nextHealth = healthPayload || qrPayload
-        ? {
-            ...(healthPayload || {}),
-            ...(qrPayload || {}),
+
+      let qrPayload = null;
+      if (shouldFetchQrPayload(healthPayload)) {
+        try {
+          qrPayload = await getLocalAgentQr();
+        } catch (error) {
+          if (!silent) {
+            addEvent("warn", error.message || "Nao foi possivel ler o QR local.");
           }
-        : null;
+        }
+      }
+
+      const directQrDataUrl = getQrDataUrl(qrPayload) || getQrDataUrl(healthPayload);
+      const qrText = getQrText(qrPayload) || getQrText(healthPayload);
+      const generatedQrDataUrl = directQrDataUrl ? "" : await createQrDataUrlFromText(qrText);
+      const nextHealth = mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl);
       const nextStatus = getAgentStatus({
         health: nextHealth,
         processState: nextProcessState,
@@ -406,6 +509,30 @@ function App() {
   useEffect(() => {
     refreshStatus({ silent: true, includeLogs: true });
   }, [refreshStatus]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+
+    let active = true;
+    let unlisten = null;
+
+    listen("riverlub-deep-link", () => {
+      if (!active) return;
+      addEvent("info", "RiverLub Web pediu para abrir a tela WhatsApp.");
+      refreshStatus({ silent: true, includeLogs: true });
+    }).then((cleanup) => {
+      if (active) {
+        unlisten = cleanup;
+      } else {
+        cleanup();
+      }
+    });
+
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, [addEvent, refreshStatus]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -746,7 +873,7 @@ function App() {
                   <p>{qrPanelState.message}</p>
                   <small>
                     Gerado em {formatDate(health?.qr_gerado_em || health?.ultimo_qr_em)}.
-                    {health?.qr_expira_em ? ` Expira em ${formatDate(health.qr_expira_em)}.` : ""}
+                    {getQrExpiresAt(health) ? ` Expira em ${formatDate(getQrExpiresAt(health))}.` : ""}
                   </small>
                 </>
               ) : (
@@ -758,6 +885,17 @@ function App() {
                     <span />
                   </div>
                   <p>{qrPanelState.message}</p>
+                  {whatsappFlags.qrExpired || whatsappFlags.sessionExpired ? (
+                    <button
+                      className="btn secondary compact-action"
+                      type="button"
+                      onClick={handleRestartAgent}
+                      disabled={isBusy || processState?.externalRunning}
+                    >
+                      <RefreshCw size={16} />
+                      Gerar novo QR
+                    </button>
+                  ) : null}
                 </>
               )}
             </div>
@@ -804,6 +942,24 @@ function App() {
               <div>
                 <dt>Estado WhatsApp</dt>
                 <dd>{health?.whatsapp_state || health?.whatsappState || "-"}</dd>
+              </div>
+              <div>
+                <dt>QR</dt>
+                <dd>
+                  {whatsappFlags.connected
+                    ? "Oculto"
+                    : whatsappFlags.qrExpired
+                      ? "Expirado"
+                      : whatsappFlags.qrAvailable
+                        ? "Disponivel"
+                        : whatsappFlags.waitingQr
+                          ? "Aguardando"
+                          : "-"}
+                </dd>
+              </div>
+              <div>
+                <dt>Expira em</dt>
+                <dd>{formatDate(getQrExpiresAt(health))}</dd>
               </div>
               <div>
                 <dt>Ultimo evento</dt>

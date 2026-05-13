@@ -10,10 +10,12 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 - Detecta agente externo na porta `47851` sem encerrar o processo legado.
 - Consulta `GET http://127.0.0.1:47851/health` e `GET /qr`.
 - Renderiza `qr_data_url` dentro do app desktop.
+- Gera imagem local a partir de `qr_text` se o agente entregar texto sem data URL.
 - Atualiza status automaticamente com polling adaptativo.
 - Mostra conta, numero conectado, versao do agente, porta local, caminhos de sessao/log e eventos recentes.
 - Copia diagnostico sanitizado, sem token e sem QR.
 - Mantem o painel Web apenas como status, atalho e download.
+- Registra `riverlub-connect://` no instalador NSIS para abrir/focar o app pelo painel Web.
 
 ## Fluxo tecnico
 
@@ -63,23 +65,22 @@ O painel Web aponta para a release do GitHub:
 https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest
 ```
 
-Quando o instalador final estiver assinado, publique o `.exe` nessa release. Alternativamente, configure `NEXT_PUBLIC_RIVERLUB_CONNECT_DOWNLOAD_URL` no frontend para apontar para um CDN ou arquivo estatico como:
-
-```text
-public/downloads/RiverLub-Connect-Setup.exe
-```
-
-O binario pesado nao deve ser versionado no Git sem decisao explicita.
+O `.exe` do instalador deve ser anexado como asset da release. O binario pesado nao deve ser versionado no Git.
 
 ## Deep link
 
-O painel Web ja tenta abrir:
+O instalador registra no Windows, por usuario atual:
 
 ```text
 riverlub-connect://open/whatsapp
 ```
 
-Nesta fase o fallback visual ja esta pronto. O registro real do protocolo deve entrar junto do instalador profissional, preferencialmente com o plugin oficial de deep link do Tauri e tratamento restrito a abrir a tela WhatsApp, sem aceitar comandos destrutivos nem tokens pela URL.
+O app aceita somente:
+
+- `riverlub-connect://open`
+- `riverlub-connect://open/whatsapp`
+
+O single instance evita multiplas janelas: se o Connect ja estiver aberto, a segunda chamada foca/restaura a janela existente e emite um evento interno para a tela WhatsApp.
 
 ## Instalador profissional final
 
@@ -90,11 +91,12 @@ Base atual:
 - Instalacao por usuario atual.
 - Pasta Start Menu `RiverLub`.
 - Downgrade bloqueado.
+- Protocolo `riverlub-connect://` registrado pelo instalador.
+- Single instance ativo.
 
 Pendencias antes de entregar em massa:
 
 - Assinatura digital do executavel.
-- Registro oficial do protocolo `riverlub-connect://`.
 - Empacotar o agente como sidecar ou runtime controlado, sem depender de Node no PATH.
 - Decidir se Puppeteer/Chromium sera embutido ou se Chrome/Edge local sera requisito.
 - Pipeline de release no GitHub.

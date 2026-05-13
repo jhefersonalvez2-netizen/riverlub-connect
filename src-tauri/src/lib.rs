@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -199,6 +200,35 @@ fn is_allowed_external_url(url: &str) -> bool {
         || value.starts_with("https://riverlub-frontend-vercel.vercel.app/")
         || value == "https://riverlub-frontend-vercel.vercel.app"
         || value.starts_with("https://github.com/jhefersonalvez2-netizen/riverlub-connect/")
+}
+
+fn deep_link_route(arg: &str) -> Option<&'static str> {
+    let value = arg.trim().trim_matches('"').to_ascii_lowercase();
+
+    match value.as_str() {
+        "riverlub-connect://open" | "riverlub-connect://open/" => Some("home"),
+        "riverlub-connect://open/whatsapp" | "riverlub-connect://open/whatsapp/" => {
+            Some("whatsapp")
+        }
+        _ => None,
+    }
+}
+
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn handle_deep_link_args(app: &tauri::AppHandle, args: Vec<String>) {
+    let route = args.iter().find_map(|arg| deep_link_route(arg));
+
+    if let Some(route) = route {
+        focus_main_window(app);
+        let _ = app.emit("riverlub-deep-link", route);
+    }
 }
 
 fn current_managed_process(
@@ -481,7 +511,14 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            handle_deep_link_args(app, args);
+        }))
         .manage(AgentProcessState::default())
+        .setup(|app| {
+            handle_deep_link_args(app.handle(), env::args().collect());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             agent_process_status,
             local_agent_health,
