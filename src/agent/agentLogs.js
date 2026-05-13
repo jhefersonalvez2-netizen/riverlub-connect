@@ -49,3 +49,19 @@ export async function readAgentLogs(limit = 80) {
     entries: lines.map(parseAgentLogLine).reverse(),
   };
 }
+
+export async function clearAgentLogs() {
+  if (!window.__TAURI_INTERNALS__) {
+    throw new Error("Limpeza de logs disponivel apenas no aplicativo desktop.");
+  }
+
+  return invoke("clear_agent_logs");
+}
+
+export async function resetAgentTestSession() {
+  if (!window.__TAURI_INTERNALS__) {
+    throw new Error("Reset de sessao disponivel apenas no aplicativo desktop.");
+  }
+
+  return invoke("reset_agent_test_session");
+}

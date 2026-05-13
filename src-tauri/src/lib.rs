@@ -62,6 +62,16 @@ struct AgentLogResponse {
     lines: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentMaintenanceResponse {
+    ok: bool,
+    message: String,
+    log_path: Option<String>,
+    archived_log_path: Option<String>,
+    session_path: Option<String>,
+}
+
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -470,6 +480,72 @@ fn read_agent_logs(limit: Option<usize>) -> Result<AgentLogResponse, String> {
 }
 
 #[tauri::command]
+fn clear_agent_logs() -> Result<AgentMaintenanceResponse, String> {
+    let paths = resolve_agent_paths();
+    let log_path = PathBuf::from(&paths.log_path);
+
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Nao foi possivel preparar a pasta de logs: {error}"))?;
+    }
+
+    let archived_log_path = if log_path.exists() {
+        let archive_path = log_path.with_file_name(format!("agent-{}.log", now_ms()));
+        fs::rename(&log_path, &archive_path)
+            .map_err(|error| format!("Nao foi possivel arquivar logs antigos: {error}"))?;
+        Some(display_path(&archive_path))
+    } else {
+        None
+    };
+
+    fs::write(&log_path, "")
+        .map_err(|error| format!("Nao foi possivel limpar o log do agente: {error}"))?;
+
+    Ok(AgentMaintenanceResponse {
+        ok: true,
+        message: "Logs antigos arquivados e leitura local limpa.".to_string(),
+        log_path: Some(display_path(&log_path)),
+        archived_log_path,
+        session_path: None,
+    })
+}
+
+#[tauri::command]
+fn reset_agent_test_session(
+    state: tauri::State<'_, AgentProcessState>,
+) -> Result<AgentMaintenanceResponse, String> {
+    let managed_was_running = current_managed_process(&state)?.0;
+
+    if managed_was_running {
+        let _ = stop_managed_agent(&state)?;
+        std::thread::sleep(Duration::from_millis(650));
+    }
+
+    if is_agent_port_open() {
+        return Err(
+            "A porta 47851 ainda esta ocupada por um agente externo. Feche o .cmd ou processo antigo antes de resetar a sessao."
+                .to_string(),
+        );
+    }
+
+    let session_path = agent_config_dir().join("session");
+
+    if session_path.exists() {
+        fs::remove_dir_all(&session_path)
+            .map_err(|error| format!("Nao foi possivel remover a sessao LocalAuth: {error}"))?;
+    }
+
+    Ok(AgentMaintenanceResponse {
+        ok: true,
+        message: "Sessao de teste removida. Clique em Conectar WhatsApp para gerar um novo QR."
+            .to_string(),
+        log_path: None,
+        archived_log_path: None,
+        session_path: Some(display_path(&session_path)),
+    })
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let url = url.trim().to_string();
 
@@ -528,6 +604,8 @@ pub fn run() {
             stop_agent_process,
             restart_agent_process,
             read_agent_logs,
+            clear_agent_logs,
+            reset_agent_test_session,
             open_external_url
         ])
         .run(tauri::generate_context!())

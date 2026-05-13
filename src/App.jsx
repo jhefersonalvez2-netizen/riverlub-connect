@@ -15,13 +15,14 @@ import {
   RefreshCw,
   ShieldCheck,
   Square,
+  Trash2,
   Wifi,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { readAgentLogs } from "./agent/agentLogs";
+import { clearAgentLogs, readAgentLogs, resetAgentTestSession } from "./agent/agentLogs";
 import {
   getAgentProcessStatus,
   restartAgentProcess,
@@ -37,7 +38,7 @@ import {
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
 
-const CONNECT_VERSION = "0.1.0";
+const CONNECT_VERSION = "0.1.1";
 const LOCAL_AGENT_PORT = 47851;
 const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
 const RELEASE_URL =
@@ -418,6 +419,8 @@ function App() {
     },
   ]);
   const refreshingRef = useRef(false);
+  const qrCacheRef = useRef(null);
+  const lastQrFingerprintRef = useRef("");
 
   const meta = STATUS_META[status] || STATUS_META.STOPPED;
   const isBusy = Boolean(busyAction);
@@ -476,7 +479,41 @@ function App() {
       const directQrDataUrl = getQrDataUrl(qrPayload) || getQrDataUrl(healthPayload);
       const qrText = getQrText(qrPayload) || getQrText(healthPayload);
       const generatedQrDataUrl = directQrDataUrl ? "" : await createQrDataUrlFromText(qrText);
-      const nextHealth = mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl);
+      let nextHealth = mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl);
+      const nextFlags = getWhatsappFlags(nextHealth);
+      const nextQrDataUrl = getQrDataUrl(nextHealth);
+
+      if (nextFlags.connected) {
+        qrCacheRef.current = null;
+        lastQrFingerprintRef.current = "";
+      } else if (nextQrDataUrl && !nextFlags.qrExpired) {
+        qrCacheRef.current = {
+          qr_data_url: nextQrDataUrl,
+          qr_text: getQrText(nextHealth),
+          qr_gerado_em: nextHealth?.qr_gerado_em || nextHealth?.ultimo_qr_em || null,
+          ultimo_qr_em: nextHealth?.ultimo_qr_em || nextHealth?.qr_gerado_em || null,
+          qr_expires_at: getQrExpiresAt(nextHealth),
+          expires_at: getQrExpiresAt(nextHealth),
+          waiting_qr: true,
+          qr_available: true,
+        };
+
+        const fingerprint = `${nextQrDataUrl.length}:${getQrExpiresAt(nextHealth) || ""}`;
+        if (fingerprint !== lastQrFingerprintRef.current) {
+          lastQrFingerprintRef.current = fingerprint;
+          addEvent("info", "QR real recebido pelo Connect e pronto para leitura.");
+        }
+      } else if (
+        (nextHealth?.waiting_qr || nextHealth?.qr_available) &&
+        qrCacheRef.current &&
+        !isQrExpired(qrCacheRef.current)
+      ) {
+        nextHealth = mergeDefinedQrPayload(nextHealth, qrCacheRef.current);
+      } else if (nextFlags.qrExpired) {
+        qrCacheRef.current = null;
+        lastQrFingerprintRef.current = "";
+      }
+
       const nextStatus = getAgentStatus({
         health: nextHealth,
         processState: nextProcessState,
@@ -644,6 +681,47 @@ function App() {
     );
     if (!confirmed) return;
     await runAction("disconnect", "Sessao WhatsApp desconectada.", disconnectLocalAgent);
+  }
+
+  async function handleDisconnectAndGenerateQr() {
+    const confirmed = window.confirm(
+      "Desconectar a sessao atual e gerar um novo QR? Use apenas para trocar o celular conectado ou refazer o pareamento."
+    );
+    if (!confirmed) return;
+
+    await runAction("new-qr", "Sessao desconectada. O Connect vai buscar um novo QR.", async () => {
+      await disconnectLocalAgent();
+      await wait(900);
+
+      if (processState?.externalRunning) {
+        return {
+          message: "Sessao desconectada. Feche o agente externo e inicie pelo Connect para gerar novo QR.",
+        };
+      }
+
+      return restartAgentProcess();
+    });
+  }
+
+  async function handleClearLogs() {
+    await runAction("clear-logs", "Logs antigos limpos.", async () => {
+      const result = await clearAgentLogs();
+      await refreshLogs();
+      return result;
+    });
+  }
+
+  async function handleResetTestSession() {
+    const confirmed = window.confirm(
+      "Resetar a sessao LocalAuth deste computador? Isso remove a sessao local e o proximo inicio deve gerar um novo QR. Continue apenas se estiver testando."
+    );
+    if (!confirmed) return;
+
+    await runAction("reset-test", "Sessao de teste resetada.", async () => {
+      qrCacheRef.current = null;
+      lastQrFingerprintRef.current = "";
+      return resetAgentTestSession();
+    });
   }
 
   async function handlePrimaryAction() {
@@ -885,6 +963,17 @@ function App() {
                     <span />
                   </div>
                   <p>{qrPanelState.message}</p>
+                  {whatsappFlags.connected || whatsappFlags.authenticated ? (
+                    <button
+                      className="btn secondary compact-action"
+                      type="button"
+                      onClick={handleDisconnectAndGenerateQr}
+                      disabled={isBusy || processState?.externalRunning}
+                    >
+                      <RefreshCw size={16} />
+                      Desconectar e gerar novo QR
+                    </button>
+                  ) : null}
                   {whatsappFlags.qrExpired || whatsappFlags.sessionExpired ? (
                     <button
                       className="btn secondary compact-action"
@@ -981,6 +1070,16 @@ function App() {
                 {diagnosticCopied ? "Diagnostico copiado" : "Copiar diagnostico"}
               </button>
               <button
+                className="btn secondary"
+                type="button"
+                onClick={handleResetTestSession}
+                disabled={isBusy || processState?.externalRunning}
+                title="Remove a sessao LocalAuth local somente apos confirmacao"
+              >
+                <Trash2 size={17} />
+                Resetar sessao de teste
+              </button>
+              <button
                 className="btn ghost"
                 type="button"
                 onClick={() => openExternalUrl(PANEL_URL)}
@@ -1055,6 +1154,10 @@ function App() {
               <button className="text-btn" type="button" onClick={refreshLogs}>
                 <FileText size={16} />
                 Atualizar logs
+              </button>
+              <button className="text-btn" type="button" onClick={handleClearLogs} disabled={isBusy}>
+                <Trash2 size={16} />
+                Limpar logs
               </button>
               <button className="text-btn" type="button" onClick={() => setLogsOpen((open) => !open)}>
                 {logsOpen ? "Ocultar" : "Ver logs"}

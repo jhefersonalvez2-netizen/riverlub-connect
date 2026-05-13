@@ -14,6 +14,8 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 - Atualiza status automaticamente com polling adaptativo.
 - Mostra conta, numero conectado, versao do agente, porta local, caminhos de sessao/log e eventos recentes.
 - Copia diagnostico sanitizado, sem token e sem QR.
+- Arquiva logs antigos pelo botao **Limpar logs**.
+- Permite **Resetar sessao de teste** somente com confirmacao explicita.
 - Mantem o painel Web apenas como status, atalho e download.
 - Registra `riverlub-connect://` no instalador NSIS para abrir/focar o app pelo painel Web.
 
@@ -93,6 +95,7 @@ Base atual:
 - Downgrade bloqueado.
 - Protocolo `riverlub-connect://` registrado pelo instalador.
 - Single instance ativo.
+- Binario Windows em subsistema GUI, sem abrir console/CMD.
 
 Pendencias antes de entregar em massa:
 
