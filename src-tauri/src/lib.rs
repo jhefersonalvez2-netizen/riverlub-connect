@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -23,9 +23,16 @@ struct ManagedAgentProcess {
     started_at_ms: u128,
 }
 
+#[derive(Clone, Default)]
+struct RuntimeCleanupSnapshot {
+    pids: Vec<u32>,
+    at_ms: u128,
+}
+
 #[derive(Default)]
 struct AgentProcessState {
     child: Mutex<Option<ManagedAgentProcess>>,
+    last_cleanup: Mutex<Option<RuntimeCleanupSnapshot>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -61,6 +68,13 @@ struct AgentProcessStatus {
     managed_running: bool,
     managed_pid: Option<u32>,
     managed_started_at_ms: Option<u128>,
+    managed_process_tree_pids: Vec<u32>,
+    runtime_process_pids: Vec<u32>,
+    browser_session_pids: Vec<u32>,
+    port_owner_pid: Option<u32>,
+    runtime_locked: bool,
+    last_cleanup_pids: Vec<u32>,
+    last_cleanup_at_ms: Option<u128>,
     port_open: bool,
     external_running: bool,
     can_start: bool,
@@ -96,6 +110,61 @@ fn now_ms() -> u128 {
 
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn ps_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn run_hidden_output(program: &str, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Falha ao executar {program}: {error}"))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn run_powershell_lines(script: &str) -> Vec<String> {
+    run_hidden_output(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+    )
+    .map(|stdout| {
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn parse_pid_lines(lines: Vec<String>) -> Vec<u32> {
+    let mut pids = lines
+        .into_iter()
+        .filter_map(|line| line.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
 }
 
 fn app_data_dir() -> PathBuf {
@@ -149,15 +218,14 @@ fn resolve_dev_agent_dir() -> Option<PathBuf> {
 
 fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime {
     let resource_dir = resolve_resource_dir(app);
-    let env_agent_dir = env_path_var("RIVERLUB_CONNECT_AGENT_DIR")
-        .and_then(|candidate| {
-            let entry = candidate.join("src").join("index.js");
-            if entry.exists() {
-                fs::canonicalize(candidate).ok()
-            } else {
-                None
-            }
-        });
+    let env_agent_dir = env_path_var("RIVERLUB_CONNECT_AGENT_DIR").and_then(|candidate| {
+        let entry = candidate.join("src").join("index.js");
+        if entry.exists() {
+            fs::canonicalize(candidate).ok()
+        } else {
+            None
+        }
+    });
     let bundled_agent_dir = resource_dir.as_ref().and_then(|dir| {
         let candidate = dir.join("runtime").join("whatsapp-agent");
         let entry = candidate.join("src").join("index.js");
@@ -254,6 +322,151 @@ fn resolve_agent_paths(app: Option<&tauri::AppHandle>) -> AgentPaths {
 fn is_agent_port_open() -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], AGENT_PORT));
     TcpStream::connect_timeout(&addr, Duration::from_millis(350)).is_ok()
+}
+
+fn wait_for_agent_port_closed(timeout: Duration) -> bool {
+    let started = now_ms();
+    while now_ms().saturating_sub(started) < timeout.as_millis() {
+        if !is_agent_port_open() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+
+    !is_agent_port_open()
+}
+
+fn is_runtime_locked(path: Option<&PathBuf>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+
+    if !path.exists() {
+        return false;
+    }
+
+    OpenOptions::new().write(true).open(path).is_err()
+}
+
+fn runtime_node_path(runtime: &ResolvedAgentRuntime) -> Option<PathBuf> {
+    let path = PathBuf::from(&runtime.node_command);
+
+    if path.exists() && path.is_absolute() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn process_ids_by_executable_path(path: &Path) -> Vec<u32> {
+    let path = ps_single_quoted(&display_path(path));
+    let script = format!(
+        "$p = '{path}'; Get-Process -ErrorAction SilentlyContinue | ForEach-Object {{ try {{ if ($_.Path -eq $p) {{ $_.Id }} }} catch {{}} }}"
+    );
+
+    parse_pid_lines(run_powershell_lines(&script))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_ids_by_executable_path(_path: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn browser_session_process_pids() -> Vec<u32> {
+    let session_dir = agent_config_dir()
+        .join("session")
+        .join("session-riverlub-local-agent");
+    let needle = ps_single_quoted(&display_path(&session_dir).to_ascii_lowercase());
+    let script = format!(
+        "$needle = '{needle}'; Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{ ($_.Name -eq 'chrome.exe' -or $_.Name -eq 'msedge.exe') -and $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($needle) }} | ForEach-Object {{ $_.ProcessId }}"
+    );
+
+    parse_pid_lines(run_powershell_lines(&script))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn browser_session_process_pids() -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn process_tree_pids(pid: u32) -> Vec<u32> {
+    let script = format!(
+        "$root = {pid}; $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId; $queue = New-Object 'System.Collections.Generic.Queue[int]'; $seen = @{{}}; $queue.Enqueue([int]$root); while ($queue.Count -gt 0) {{ $pid = $queue.Dequeue(); if ($seen.ContainsKey([string]$pid)) {{ continue }}; $seen[[string]$pid] = $true; $all | Where-Object {{ $_.ParentProcessId -eq $pid }} | ForEach-Object {{ $queue.Enqueue([int]$_.ProcessId) }} }}; $seen.Keys | Sort-Object {{ [int]$_ }}"
+    );
+
+    parse_pid_lines(run_powershell_lines(&script))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_tree_pids(pid: u32) -> Vec<u32> {
+    vec![pid]
+}
+
+#[cfg(target_os = "windows")]
+fn port_owner_pid() -> Option<u32> {
+    let output = run_hidden_output("netstat.exe", &["-ano", "-p", "TCP"]).ok()?;
+
+    output.lines().find_map(|line| {
+        let value = line.trim();
+        if !value.contains("127.0.0.1:47851") || !value.contains("LISTENING") {
+            return None;
+        }
+
+        value
+            .split_whitespace()
+            .last()
+            .and_then(|pid| pid.parse::<u32>().ok())
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn port_owner_pid() -> Option<u32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_tree(pid: u32) -> Result<(), String> {
+    let pid_text = pid.to_string();
+    let mut command = Command::new("taskkill.exe");
+    command
+        .args(["/PID", &pid_text, "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let _ = command
+        .status()
+        .map_err(|error| format!("Falha ao encerrar arvore do processo {pid}: {error}"))?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_process_tree(_pid: u32) -> Result<(), String> {
+    Ok(())
+}
+
+fn wait_for_runtime_unlock(path: Option<&PathBuf>, timeout: Duration) -> bool {
+    let started = now_ms();
+    while now_ms().saturating_sub(started) < timeout.as_millis() {
+        if !is_runtime_locked(path) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+
+    !is_runtime_locked(path)
+}
+
+fn runtime_process_pids(runtime: &ResolvedAgentRuntime) -> Vec<u32> {
+    runtime_node_path(runtime)
+        .as_ref()
+        .map(|path| process_ids_by_executable_path(path))
+        .unwrap_or_default()
 }
 
 fn request_local_agent(method: &str, path: &str) -> Result<serde_json::Value, String> {
@@ -364,12 +577,82 @@ fn current_managed_process(
     }
 }
 
+fn last_cleanup_snapshot(state: &AgentProcessState) -> Result<(Vec<u32>, Option<u128>), String> {
+    let guard = state
+        .last_cleanup
+        .lock()
+        .map_err(|_| "Nao foi possivel ler limpeza recente do runtime".to_string())?;
+
+    if let Some(snapshot) = guard.as_ref() {
+        Ok((snapshot.pids.clone(), Some(snapshot.at_ms)))
+    } else {
+        Ok((Vec::new(), None))
+    }
+}
+
+fn record_cleanup_snapshot(state: &AgentProcessState, pids: Vec<u32>) -> Result<(), String> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+
+    let mut guard = state
+        .last_cleanup
+        .lock()
+        .map_err(|_| "Nao foi possivel registrar limpeza do runtime".to_string())?;
+    *guard = Some(RuntimeCleanupSnapshot {
+        pids,
+        at_ms: now_ms(),
+    });
+
+    Ok(())
+}
+
+fn cleanup_orphaned_runtime_processes(
+    state: &AgentProcessState,
+    app: &tauri::AppHandle,
+) -> Result<Vec<u32>, String> {
+    let runtime = resolve_agent_runtime(Some(app));
+    let node_path = runtime_node_path(&runtime);
+    let (_, managed_pid, _) = current_managed_process(state)?;
+    let mut candidates = runtime_process_pids(&runtime);
+
+    candidates.extend(browser_session_process_pids());
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    let mut killed = Vec::new();
+    for pid in candidates {
+        if Some(pid) == managed_pid {
+            continue;
+        }
+
+        kill_process_tree(pid)?;
+        killed.push(pid);
+    }
+
+    if !killed.is_empty() {
+        wait_for_agent_port_closed(Duration::from_millis(2500));
+        wait_for_runtime_unlock(node_path.as_ref(), Duration::from_millis(2500));
+        record_cleanup_snapshot(state, killed.clone())?;
+    }
+
+    Ok(killed)
+}
+
 fn build_process_status(
     state: &AgentProcessState,
     app: Option<&tauri::AppHandle>,
     message: Option<String>,
 ) -> Result<AgentProcessStatus, String> {
     let (managed_running, managed_pid, managed_started_at_ms) = current_managed_process(state)?;
+    let runtime = resolve_agent_runtime(app);
+    let node_path = runtime_node_path(&runtime);
+    let runtime_process_pids = runtime_process_pids(&runtime);
+    let browser_session_pids = browser_session_process_pids();
+    let managed_process_tree_pids = managed_pid.map(process_tree_pids).unwrap_or_default();
+    let port_owner_pid = port_owner_pid();
+    let runtime_locked = is_runtime_locked(node_path.as_ref());
+    let (last_cleanup_pids, last_cleanup_at_ms) = last_cleanup_snapshot(state)?;
     let port_open = is_agent_port_open();
     let paths = resolve_agent_paths(app);
     let external_running = port_open && !managed_running;
@@ -379,6 +662,13 @@ fn build_process_status(
         managed_running,
         managed_pid,
         managed_started_at_ms,
+        managed_process_tree_pids,
+        runtime_process_pids,
+        browser_session_pids,
+        port_owner_pid,
+        runtime_locked,
+        last_cleanup_pids,
+        last_cleanup_at_ms,
         port_open,
         external_running,
         can_start,
@@ -489,8 +779,18 @@ fn stop_managed_agent(state: &AgentProcessState) -> Result<bool, String> {
     };
 
     if let Some(mut managed) = child_to_stop.take() {
+        if is_agent_port_open() {
+            let _ = request_local_agent("POST", "/shutdown");
+            wait_for_agent_port_closed(Duration::from_millis(1800));
+        }
+
+        let _ = kill_process_tree(managed.pid);
         let _ = managed.child.kill();
         let _ = managed.child.wait();
+        for pid in browser_session_process_pids() {
+            let _ = kill_process_tree(pid);
+        }
+        wait_for_agent_port_closed(Duration::from_millis(2500));
         return Ok(true);
     }
 
@@ -571,7 +871,33 @@ fn restart_agent_process(
 }
 
 #[tauri::command]
-fn read_agent_logs(app: tauri::AppHandle, limit: Option<usize>) -> Result<AgentLogResponse, String> {
+fn cleanup_runtime_orphans(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AgentProcessState>,
+) -> Result<AgentProcessStatus, String> {
+    let killed = cleanup_orphaned_runtime_processes(&state, &app)?;
+    let message = if killed.is_empty() {
+        "Nenhum runtime antigo do RiverLub Connect estava preso.".to_string()
+    } else {
+        format!(
+            "Runtime antigo encerrado com seguranca (PID{} {}).",
+            if killed.len() > 1 { "s" } else { "" },
+            killed
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    build_process_status(&state, Some(&app), Some(message))
+}
+
+#[tauri::command]
+fn read_agent_logs(
+    app: tauri::AppHandle,
+    limit: Option<usize>,
+) -> Result<AgentLogResponse, String> {
     let paths = resolve_agent_paths(Some(&app));
     let limit = limit.unwrap_or(80).clamp(1, 300);
     let log_path = PathBuf::from(&paths.log_path);
@@ -716,8 +1042,16 @@ pub fn run() {
         }))
         .manage(AgentProcessState::default())
         .setup(|app| {
+            let state = app.state::<AgentProcessState>();
+            let _ = cleanup_orphaned_runtime_processes(&state, app.handle());
             handle_deep_link_args(app.handle(), env::args().collect());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let state = window.state::<AgentProcessState>();
+                let _ = stop_managed_agent(&state);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             agent_process_status,
@@ -727,6 +1061,7 @@ pub fn run() {
             start_agent_process,
             stop_agent_process,
             restart_agent_process,
+            cleanup_runtime_orphans,
             read_agent_logs,
             clear_agent_logs,
             reset_agent_test_session,

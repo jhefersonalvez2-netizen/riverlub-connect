@@ -6,7 +6,9 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 
 - Controla o agente `backend/whatsapp-agent` por comandos Tauri nativos.
 - Inicia o agente sem terminal visivel.
-- Para somente processos criados pelo Connect.
+- Rastreia PID do Node, arvore de processos e browsers da sessao WhatsApp.
+- Encerra o runtime gerenciado com shutdown local e `taskkill /T /F` como fallback.
+- Limpa runtime orfao do Connect na inicializacao quando um processo antigo ficou preso.
 - Detecta agente externo na porta `47851` sem encerrar o processo legado.
 - Consulta `GET http://127.0.0.1:47851/health` e `GET /qr`.
 - Renderiza `qr_data_url` dentro do app desktop.
@@ -19,6 +21,7 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 - Mantem o painel Web apenas como status, atalho e download.
 - Registra `riverlub-connect://` no instalador NSIS para abrir/focar o app pelo painel Web.
 - Empacota runtime proprio em `runtime/`: Node.js e `whatsapp-agent` com dependencias.
+- O instalador/desinstalador encerra o Connect e o `runtime/node/node.exe` por caminho exato antes de substituir arquivos.
 
 ## Fluxo tecnico
 
@@ -30,6 +33,19 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 6. O Connect mostra o QR real.
 7. Ao autenticar, o QR some e o status passa por `Autenticando` ate `WhatsApp conectado`.
 8. Com `ready`, o agente envia `telefone_conectado` e `nome_conta` ao backend e tambem retorna esses dados no status local.
+9. Ao fechar/reiniciar/parar, o Connect solicita `POST /shutdown` ao agente gerenciado, aguarda a porta liberar e encerra a arvore restante se necessario.
+
+## Ciclo de vida do runtime
+
+- O Connect guarda o PID do processo Node iniciado por ele.
+- O status tecnico mostra PID gerenciado, dono da porta, PIDs do runtime instalado, browsers da sessao, lock do runtime e ultima limpeza.
+- Na inicializacao, o app procura `runtime/node/node.exe` antigo e processos Chrome/Edge com `session-riverlub-local-agent`; se forem orfaos, encerra antes de permitir novo start.
+- O botao **Liberar runtime preso** executa a mesma limpeza controlada sem afetar Node de outros projetos.
+- O hook NSIS `PREINSTALL/PREUNINSTALL` mata somente:
+  - `${MAINBINARYNAME}.exe`
+  - `$INSTDIR\runtime\node\node.exe`
+
+Isso evita instalacao parcial e erro de arquivo em uso em `runtime/node/node.exe`.
 
 ## Seguranca
 
@@ -39,6 +55,7 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 - Diagnosticos sanitizam tokens, `Bearer` e `data:image`.
 - Desconectar WhatsApp exige confirmacao.
 - Parar agente afeta somente processo iniciado pelo Connect.
+- Limpeza automatica de runtime usa caminho exato do bundle instalado; nao usa `taskkill /IM node.exe` amplo.
 - Agente externo iniciado por `.cmd` ou terminal e monitorado, mas nao encerrado.
 - Deep link futuro nao deve executar acoes perigosas sozinho; deve apenas abrir a tela certa.
 

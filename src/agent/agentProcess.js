@@ -27,3 +27,7 @@ export async function stopAgentProcess() {
 export async function restartAgentProcess() {
   return invokeProcess("restart_agent_process");
 }
+
+export async function cleanupRuntimeOrphans() {
+  return invokeProcess("cleanup_runtime_orphans");
+}

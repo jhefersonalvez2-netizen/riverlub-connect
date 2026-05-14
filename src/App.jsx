@@ -24,6 +24,7 @@ import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearAgentLogs, readAgentLogs, resetAgentTestSession } from "./agent/agentLogs";
 import {
+  cleanupRuntimeOrphans,
   getAgentProcessStatus,
   restartAgentProcess,
   startAgentProcess,
@@ -38,7 +39,7 @@ import {
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
 
-const CONNECT_VERSION = "0.2.0";
+const CONNECT_VERSION = "0.2.1";
 const LOCAL_AGENT_PORT = 47851;
 const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
 const RELEASE_URL =
@@ -675,6 +676,14 @@ function App() {
     await runAction("restart", "Comando de reinicio enviado.", restartAgentProcess);
   }
 
+  async function handleCleanupRuntime() {
+    await runAction(
+      "cleanup-runtime",
+      "Verificacao de runtime preso concluida.",
+      cleanupRuntimeOrphans
+    );
+  }
+
   async function handleDisconnect() {
     const confirmed = window.confirm(
       "Desconectar o WhatsApp desta oficina agora? A sessao atual sera encerrada e um novo QR pode ser necessario."
@@ -754,6 +763,13 @@ function App() {
       status_label: meta.label,
       process_origin: getProcessOrigin(processState),
       managed_pid: processState?.managedPid || null,
+      managed_process_tree_pids: processState?.managedProcessTreePids || [],
+      runtime_process_pids: processState?.runtimeProcessPids || [],
+      browser_session_pids: processState?.browserSessionPids || [],
+      port_owner_pid: processState?.portOwnerPid || null,
+      runtime_locked: Boolean(processState?.runtimeLocked),
+      last_cleanup_pids: processState?.lastCleanupPids || [],
+      last_cleanup_at: formatTimestampMs(processState?.lastCleanupAtMs),
       managed_by_connect: Boolean(health?.managed_by_connect),
       port: processState?.port || LOCAL_AGENT_PORT,
       port_open: Boolean(processState?.portOpen),
@@ -1025,6 +1041,14 @@ function App() {
                 <dd>{getProcessOrigin(processState)}</dd>
               </div>
               <div>
+                <dt>PID Node</dt>
+                <dd>{processState?.managedPid || processState?.portOwnerPid || "-"}</dd>
+              </div>
+              <div>
+                <dt>Arvore do agente</dt>
+                <dd>{processState?.managedProcessTreePids?.join(", ") || "-"}</dd>
+              </div>
+              <div>
                 <dt>Runtime do agente</dt>
                 <dd>{processState?.paths?.runtimeOrigin || health?.runtime_origin || "-"}</dd>
               </div>
@@ -1039,6 +1063,10 @@ function App() {
               <div>
                 <dt>Agente em uso</dt>
                 <dd>{processState?.paths?.agentDir || health?.runtime_dir || "-"}</dd>
+              </div>
+              <div>
+                <dt>Lock do runtime</dt>
+                <dd>{processState?.runtimeLocked ? "Arquivo em uso" : "Livre"}</dd>
               </div>
               <div>
                 <dt>Versao do agente</dt>
@@ -1106,6 +1134,16 @@ function App() {
               <button
                 className="btn ghost"
                 type="button"
+                onClick={handleCleanupRuntime}
+                disabled={isBusy}
+                title="Encerra apenas runtimes antigos do RiverLub Connect que ficaram presos"
+              >
+                <ShieldCheck size={17} />
+                Liberar runtime preso
+              </button>
+              <button
+                className="btn ghost"
+                type="button"
                 onClick={() => openExternalUrl(RELEASE_URL)}
               >
                 <Download size={17} />
@@ -1145,12 +1183,32 @@ function App() {
                 <dd>127.0.0.1:{processState?.port || LOCAL_AGENT_PORT}</dd>
               </div>
               <div>
+                <dt>Dono da porta</dt>
+                <dd>{processState?.portOwnerPid || "-"}</dd>
+              </div>
+              <div>
+                <dt>Runtime instalado</dt>
+                <dd>{processState?.runtimeProcessPids?.join(", ") || "-"}</dd>
+              </div>
+              <div>
+                <dt>Browser da sessao</dt>
+                <dd>{processState?.browserSessionPids?.join(", ") || "-"}</dd>
+              </div>
+              <div>
                 <dt>Polling atual</dt>
                 <dd>{visible ? `${pollingInterval} ms` : "Pausado com a janela oculta"}</dd>
               </div>
               <div>
                 <dt>Inicio gerenciado</dt>
                 <dd>{formatTimestampMs(processState?.managedStartedAtMs)}</dd>
+              </div>
+              <div>
+                <dt>Ultima limpeza</dt>
+                <dd>
+                  {processState?.lastCleanupAtMs
+                    ? `${formatTimestampMs(processState.lastCleanupAtMs)} | PID ${processState.lastCleanupPids?.join(", ")}`
+                    : "-"}
+                </dd>
               </div>
               <div>
                 <dt>Sessao LocalAuth</dt>
