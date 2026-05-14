@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearAgentLogs, readAgentLogs, resetAgentTestSession } from "./agent/agentLogs";
 import {
@@ -39,7 +38,7 @@ import {
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
 
-const CONNECT_VERSION = "0.2.1";
+const CONNECT_VERSION = "0.2.2";
 const LOCAL_AGENT_PORT = 47851;
 const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
 const RELEASE_URL =
@@ -77,6 +76,43 @@ async function openExternalUrl(url) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+async function fetchQrPayloadFromLocalhost() {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 2500);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${LOCAL_AGENT_PORT}/qr`, {
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload?.erro || "Agente local indisponivel");
+    }
+
+    return payload || {};
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readQrPayloadForRender() {
+  try {
+    return await fetchQrPayloadFromLocalhost();
+  } catch (fetchError) {
+    try {
+      return await getLocalAgentQr();
+    } catch (invokeError) {
+      throw new Error(
+        invokeError.message ||
+          fetchError.message ||
+          "Nao foi possivel ler o QR local."
+      );
+    }
+  }
+}
+
 function sanitizeDiagnostic(value) {
   return String(value || "")
     .replace(/rla_[a-f0-9]{24,}/gi, "rla_[oculto]")
@@ -87,9 +123,7 @@ function sanitizeDiagnostic(value) {
 }
 
 function isValidQrDataUrl(value) {
-  return /^data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/i.test(
-    String(value || "").trim()
-  );
+  return String(value || "").trim().startsWith("data:image");
 }
 
 function getQrDataUrl(health) {
@@ -117,37 +151,14 @@ function isQrExpired(health) {
   return !Number.isNaN(date.getTime()) && date.getTime() <= Date.now();
 }
 
-async function createQrDataUrlFromText(qrText) {
-  if (!qrText) return "";
-
-  try {
-    return await QRCode.toDataURL(qrText, {
-      errorCorrectionLevel: "M",
-      margin: 2,
-      width: 320,
-    });
-  } catch {
-    return "";
-  }
-}
-
 function shouldFetchQrPayload(health) {
-  if (!health) return false;
+  if (!health) return true;
 
   const connected = Boolean(health.conectado || health.connected || health.pronto_para_envio);
-  if (connected) return false;
-
-  return Boolean(
-    health.qr_available ||
-      health.qrAvailable ||
-      health.waiting_qr ||
-      health.waitingQr ||
-      getQrDataUrl(health) ||
-      getQrText(health)
-  );
+  return !connected;
 }
 
-function mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl = "") {
+function mergeDefinedQrPayload(healthPayload, qrPayload) {
   if (!healthPayload && !qrPayload) return null;
 
   const nextHealth = { ...(healthPayload || {}) };
@@ -159,17 +170,18 @@ function mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl = ""
   });
 
   const connected = Boolean(nextHealth.conectado || nextHealth.connected || nextHealth.pronto_para_envio);
-  const qrDataUrl = getQrDataUrl(nextHealth) || generatedQrDataUrl;
+  const qrDataUrl = getQrDataUrl(nextHealth);
   const qrText = getQrText(nextHealth);
   const expiresAt = getQrExpiresAt(nextHealth);
-  const qrExpired = isQrExpired(nextHealth);
-  const qrAvailable = Boolean(!connected && !qrExpired && (nextHealth.qr_available || qrDataUrl || qrText));
+  const qrAvailable = Boolean(
+    !connected && (nextHealth.qr_available || nextHealth.qrAvailable || qrDataUrl || qrText)
+  );
 
   return {
     ...nextHealth,
     waiting_qr: connected ? false : Boolean(nextHealth.waiting_qr || nextHealth.waitingQr || qrAvailable),
     qr_available: qrAvailable,
-    qr_data_url: qrAvailable ? qrDataUrl : null,
+    qr_data_url: qrDataUrl || nextHealth.qr_data_url || null,
     qr_text: qrAvailable ? qrText || null : null,
     qr_expires_at: expiresAt,
     expires_at: expiresAt,
@@ -408,6 +420,7 @@ function App() {
     logPath: "",
     entries: [],
   });
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [logsOpen, setLogsOpen] = useState(true);
   const [visible, setVisible] = useState(() => !document.hidden);
@@ -420,14 +433,20 @@ function App() {
     },
   ]);
   const refreshingRef = useRef(false);
-  const qrCacheRef = useRef(null);
   const lastQrFingerprintRef = useRef("");
 
   const meta = STATUS_META[status] || STATUS_META.STOPPED;
   const isBusy = Boolean(busyAction);
   const whatsappFlags = getWhatsappFlags(health);
-  const qrDataUrl = whatsappFlags.qrExpired ? "" : getQrDataUrl(health);
-  const qrPanelState = getQrPanelState(health);
+  const renderQrDataUrl = qrDataUrl?.startsWith("data:image") ? qrDataUrl : "";
+  const qrPanelState = renderQrDataUrl
+    ? {
+        tone: "warning",
+        label: "QR Code disponivel",
+        message: "No celular, abra WhatsApp > Aparelhos conectados e leia este QR Code.",
+        loading: false,
+      }
+    : getQrPanelState(health);
   const account = getAccountInfo(health);
   const errorType = classifyAgentError(health?.erro_ultimo || "");
   const primaryAction = getPrimaryAction(status, health, processState);
@@ -469,7 +488,7 @@ function App() {
       let qrPayload = null;
       if (shouldFetchQrPayload(healthPayload)) {
         try {
-          qrPayload = await getLocalAgentQr();
+          qrPayload = await readQrPayloadForRender();
         } catch (error) {
           if (!silent) {
             addEvent("warn", error.message || "Nao foi possivel ler o QR local.");
@@ -478,40 +497,23 @@ function App() {
       }
 
       const directQrDataUrl = getQrDataUrl(qrPayload) || getQrDataUrl(healthPayload);
-      const qrText = getQrText(qrPayload) || getQrText(healthPayload);
-      const generatedQrDataUrl = directQrDataUrl ? "" : await createQrDataUrlFromText(qrText);
-      let nextHealth = mergeDefinedQrPayload(healthPayload, qrPayload, generatedQrDataUrl);
+      const nextHealth = mergeDefinedQrPayload(healthPayload, qrPayload);
       const nextFlags = getWhatsappFlags(nextHealth);
       const nextQrDataUrl = getQrDataUrl(nextHealth);
 
       if (nextFlags.connected) {
-        qrCacheRef.current = null;
+        setQrDataUrl("");
         lastQrFingerprintRef.current = "";
-      } else if (nextQrDataUrl && !nextFlags.qrExpired) {
-        qrCacheRef.current = {
-          qr_data_url: nextQrDataUrl,
-          qr_text: getQrText(nextHealth),
-          qr_gerado_em: nextHealth?.qr_gerado_em || nextHealth?.ultimo_qr_em || null,
-          ultimo_qr_em: nextHealth?.ultimo_qr_em || nextHealth?.qr_gerado_em || null,
-          qr_expires_at: getQrExpiresAt(nextHealth),
-          expires_at: getQrExpiresAt(nextHealth),
-          waiting_qr: true,
-          qr_available: true,
-        };
+      } else if (directQrDataUrl?.startsWith("data:image") || nextQrDataUrl?.startsWith("data:image")) {
+        const imageUrl = directQrDataUrl || nextQrDataUrl;
+        setQrDataUrl(imageUrl);
 
-        const fingerprint = `${nextQrDataUrl.length}:${getQrExpiresAt(nextHealth) || ""}`;
+        const fingerprint = `${imageUrl.length}:${getQrExpiresAt(nextHealth) || ""}`;
         if (fingerprint !== lastQrFingerprintRef.current) {
           lastQrFingerprintRef.current = fingerprint;
           addEvent("info", "QR real recebido pelo Connect e pronto para leitura.");
         }
-      } else if (
-        (nextHealth?.waiting_qr || nextHealth?.qr_available) &&
-        qrCacheRef.current &&
-        !isQrExpired(qrCacheRef.current)
-      ) {
-        nextHealth = mergeDefinedQrPayload(nextHealth, qrCacheRef.current);
       } else if (nextFlags.qrExpired) {
-        qrCacheRef.current = null;
         lastQrFingerprintRef.current = "";
       }
 
@@ -547,6 +549,39 @@ function App() {
   useEffect(() => {
     refreshStatus({ silent: true, includeLogs: true });
   }, [refreshStatus]);
+
+  useEffect(() => {
+    if (whatsappFlags.connected) return undefined;
+
+    let cancelled = false;
+    let timer = null;
+
+    const pullQr = async () => {
+      try {
+        const payload = await readQrPayloadForRender();
+        if (cancelled) return;
+
+        const imageUrl = getQrDataUrl(payload);
+        if (imageUrl?.startsWith("data:image")) {
+          setQrDataUrl(imageUrl);
+          setHealth((current) => mergeDefinedQrPayload(current, payload) || payload);
+        }
+      } catch {
+        // QR polling is opportunistic; the regular status panel reports offline/errors.
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(pullQr, 1800);
+        }
+      }
+    };
+
+    pullQr();
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [whatsappFlags.connected]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -727,7 +762,7 @@ function App() {
     if (!confirmed) return;
 
     await runAction("reset-test", "Sessao de teste resetada.", async () => {
-      qrCacheRef.current = null;
+      setQrDataUrl("");
       lastQrFingerprintRef.current = "";
       return resetAgentTestSession();
     });
@@ -960,10 +995,21 @@ function App() {
               </span>
             </div>
 
-            <div className={qrDataUrl ? "qr-live" : "qr-placeholder"}>
-              {qrDataUrl ? (
+            <div className={renderQrDataUrl ? "qr-live" : "qr-placeholder"}>
+              {renderQrDataUrl ? (
                 <>
-                  <img src={qrDataUrl} alt="QR Code real do WhatsApp" />
+                  <img
+                    src={renderQrDataUrl}
+                    alt="QR WhatsApp"
+                    style={{
+                      width: 280,
+                      height: 280,
+                      objectFit: "contain",
+                      background: "#fff",
+                      padding: 12,
+                      borderRadius: 16,
+                    }}
+                  />
                   <p>{qrPanelState.message}</p>
                   <small>
                     Gerado em {formatDate(health?.qr_gerado_em || health?.ultimo_qr_em)}.

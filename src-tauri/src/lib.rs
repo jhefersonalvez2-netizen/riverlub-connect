@@ -469,6 +469,63 @@ fn runtime_process_pids(runtime: &ResolvedAgentRuntime) -> Vec<u32> {
         .unwrap_or_default()
 }
 
+fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.len() < 2 || start >= bytes.len() {
+        return None;
+    }
+
+    (start..bytes.len().saturating_sub(1))
+        .find(|index| bytes[*index] == b'\r' && bytes[*index + 1] == b'\n')
+}
+
+fn decode_chunked_http_body(body: &str) -> Result<String, String> {
+    let bytes = body.as_bytes();
+    let mut cursor = 0usize;
+    let mut decoded = Vec::new();
+
+    loop {
+        let line_end = find_crlf(bytes, cursor)
+            .ok_or_else(|| "Resposta local chunked invalida".to_string())?;
+        let size_line = std::str::from_utf8(&bytes[cursor..line_end])
+            .map_err(|_| "Resposta local chunked sem UTF-8 valido".to_string())?;
+        let size_text = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_text, 16)
+            .map_err(|_| "Resposta local chunked com tamanho invalido".to_string())?;
+
+        cursor = line_end + 2;
+
+        if size == 0 {
+            break;
+        }
+
+        if cursor + size > bytes.len() {
+            return Err("Resposta local chunked incompleta".to_string());
+        }
+
+        decoded.extend_from_slice(&bytes[cursor..cursor + size]);
+        cursor += size;
+
+        if cursor + 2 <= bytes.len() && bytes[cursor] == b'\r' && bytes[cursor + 1] == b'\n' {
+            cursor += 2;
+        }
+    }
+
+    String::from_utf8(decoded).map_err(|_| "Resposta local chunked sem UTF-8 valido".to_string())
+}
+
+fn decode_http_body(headers: &str, body: &str) -> Result<String, String> {
+    let is_chunked = headers.lines().any(|line| {
+        let normalized = line.trim().to_ascii_lowercase();
+        normalized.starts_with("transfer-encoding:") && normalized.contains("chunked")
+    });
+
+    if is_chunked {
+        decode_chunked_http_body(body)
+    } else {
+        Ok(body.to_string())
+    }
+}
+
 fn request_local_agent(method: &str, path: &str) -> Result<serde_json::Value, String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], AGENT_PORT));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1300))
@@ -498,7 +555,8 @@ fn request_local_agent(method: &str, path: &str) -> Result<serde_json::Value, St
         .split_once("\r\n\r\n")
         .ok_or_else(|| "Resposta local invalida do agente WhatsApp".to_string())?;
     let status_line = headers.lines().next().unwrap_or_default();
-    let payload = serde_json::from_str::<serde_json::Value>(body.trim()).unwrap_or_else(|_| {
+    let decoded_body = decode_http_body(headers, body)?;
+    let payload = serde_json::from_str::<serde_json::Value>(decoded_body.trim()).unwrap_or_else(|_| {
         serde_json::json!({
             "sucesso": false,
             "erro": "Resposta local sem JSON valido"
