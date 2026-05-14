@@ -38,6 +38,21 @@ struct AgentPaths {
     session_path: String,
     log_path: String,
     node_command: String,
+    node_exists: bool,
+    node_version: Option<String>,
+    runtime_origin: String,
+    resource_dir: Option<String>,
+}
+
+#[derive(Clone)]
+struct ResolvedAgentRuntime {
+    agent_dir: Option<PathBuf>,
+    agent_entry: Option<PathBuf>,
+    node_command: String,
+    node_exists: bool,
+    node_version: Option<String>,
+    runtime_origin: String,
+    resource_dir: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -103,15 +118,19 @@ fn agent_config_dir() -> PathBuf {
     app_data_dir().join("RiverLub").join("whatsapp-agent")
 }
 
-fn resolve_node_command() -> String {
-    env::var("RIVERLUB_CONNECT_NODE_PATH")
+fn env_path_var(name: &str) -> Option<PathBuf> {
+    env::var(name)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "node".to_string())
+        .map(PathBuf::from)
 }
 
-fn resolve_agent_dir() -> Option<PathBuf> {
+fn resolve_resource_dir(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
+    app.and_then(|handle| handle.path().resource_dir().ok())
+}
+
+fn resolve_dev_agent_dir() -> Option<PathBuf> {
     let mut cursor = env::current_dir().ok();
 
     while let Some(root) = cursor {
@@ -128,25 +147,107 @@ fn resolve_agent_dir() -> Option<PathBuf> {
     None
 }
 
-fn resolve_agent_paths() -> AgentPaths {
+fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime {
+    let resource_dir = resolve_resource_dir(app);
+    let env_agent_dir = env_path_var("RIVERLUB_CONNECT_AGENT_DIR")
+        .and_then(|candidate| {
+            let entry = candidate.join("src").join("index.js");
+            if entry.exists() {
+                fs::canonicalize(candidate).ok()
+            } else {
+                None
+            }
+        });
+    let bundled_agent_dir = resource_dir.as_ref().and_then(|dir| {
+        let candidate = dir.join("runtime").join("whatsapp-agent");
+        let entry = candidate.join("src").join("index.js");
+        if entry.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
+    });
+    let dev_agent_dir = resolve_dev_agent_dir();
+
+    let (agent_dir, runtime_origin) = if env_agent_dir.is_some() {
+        (env_agent_dir, "custom-env".to_string())
+    } else if bundled_agent_dir.is_some() {
+        (bundled_agent_dir, "bundled".to_string())
+    } else if dev_agent_dir.is_some() {
+        (dev_agent_dir, "development".to_string())
+    } else {
+        (None, "missing".to_string())
+    };
+
+    let bundled_node = resource_dir
+        .as_ref()
+        .map(|dir| dir.join("runtime").join("node").join("node.exe"))
+        .filter(|candidate| candidate.exists());
+    let node_command = env::var("RIVERLUB_CONNECT_NODE_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| bundled_node.as_ref().map(|path| display_path(path)))
+        .unwrap_or_else(|| "node".to_string());
+    let node_version = resolve_node_version(&node_command);
+    let node_exists = node_version.is_some() || PathBuf::from(&node_command).exists();
+    let agent_entry = agent_dir
+        .as_ref()
+        .map(|dir| dir.join("src").join("index.js"));
+
+    ResolvedAgentRuntime {
+        agent_dir,
+        agent_entry,
+        node_command,
+        node_exists,
+        node_version,
+        runtime_origin,
+        resource_dir,
+    }
+}
+
+fn resolve_node_version(node_command: &str) -> Option<String> {
+    let mut command = Command::new(node_command);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_agent_paths(app: Option<&tauri::AppHandle>) -> AgentPaths {
     let config_dir = agent_config_dir();
     let config_path = config_dir.join("config.json");
     let session_path = config_dir.join("session");
     let log_path = config_dir.join("logs").join("agent.log");
-    let agent_dir = resolve_agent_dir();
-    let agent_entry = agent_dir
+    let runtime = resolve_agent_runtime(app);
+    let agent_entry_exists = runtime
+        .agent_entry
         .as_ref()
-        .map(|dir| dir.join("src").join("index.js"));
-    let agent_entry_exists = agent_entry.as_ref().is_some_and(|entry| entry.exists());
+        .is_some_and(|entry| entry.exists());
 
     AgentPaths {
-        agent_dir: agent_dir.as_ref().map(|path| display_path(path)),
-        agent_entry: agent_entry.as_ref().map(|path| display_path(path)),
+        agent_dir: runtime.agent_dir.as_ref().map(|path| display_path(path)),
+        agent_entry: runtime.agent_entry.as_ref().map(|path| display_path(path)),
         agent_entry_exists,
         config_path: display_path(&config_path),
         session_path: display_path(&session_path),
         log_path: display_path(&log_path),
-        node_command: resolve_node_command(),
+        node_command: runtime.node_command,
+        node_exists: runtime.node_exists,
+        node_version: runtime.node_version,
+        runtime_origin: runtime.runtime_origin,
+        resource_dir: runtime.resource_dir.as_ref().map(|path| display_path(path)),
     }
 }
 
@@ -265,11 +366,12 @@ fn current_managed_process(
 
 fn build_process_status(
     state: &AgentProcessState,
+    app: Option<&tauri::AppHandle>,
     message: Option<String>,
 ) -> Result<AgentProcessStatus, String> {
     let (managed_running, managed_pid, managed_started_at_ms) = current_managed_process(state)?;
     let port_open = is_agent_port_open();
-    let paths = resolve_agent_paths();
+    let paths = resolve_agent_paths(app);
     let external_running = port_open && !managed_running;
     let can_start = paths.agent_entry_exists && !port_open && !managed_running;
 
@@ -286,10 +388,14 @@ fn build_process_status(
     })
 }
 
-fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, String> {
+fn spawn_managed_agent(
+    state: &AgentProcessState,
+    app: &tauri::AppHandle,
+) -> Result<AgentProcessStatus, String> {
     if current_managed_process(state)?.0 {
         return build_process_status(
             state,
+            Some(app),
             Some("Agente ja esta sendo gerenciado pelo RiverLub Connect.".to_string()),
         );
     }
@@ -297,6 +403,7 @@ fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, 
     if is_agent_port_open() {
         return build_process_status(
             state,
+            Some(app),
             Some(
                 "Porta 47851 ja esta em uso. O Connect vai monitorar o agente existente sem encerrar processo externo."
                     .to_string(),
@@ -304,11 +411,14 @@ fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, 
         );
     }
 
-    let agent_dir = resolve_agent_dir().ok_or_else(|| {
-        "Nao encontrei backend/whatsapp-agent a partir da pasta atual do RiverLub Connect."
+    let runtime = resolve_agent_runtime(Some(app));
+    let agent_dir = runtime.agent_dir.ok_or_else(|| {
+        "Nao encontrei o agente WhatsApp empacotado. Reinstale o RiverLub Connect pela release mais recente."
             .to_string()
     })?;
-    let agent_entry = agent_dir.join("src").join("index.js");
+    let agent_entry = runtime
+        .agent_entry
+        .unwrap_or_else(|| agent_dir.join("src").join("index.js"));
 
     if !agent_entry.exists() {
         return Err(format!(
@@ -317,15 +427,23 @@ fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, 
         ));
     }
 
-    let node_command = resolve_node_command();
-    let mut command = Command::new(&node_command);
+    if !runtime.node_exists || runtime.node_version.is_none() {
+        return Err(format!(
+            "Runtime Node nao encontrado para iniciar o agente. Caminho tentado: {}",
+            runtime.node_command
+        ));
+    }
+
+    let mut command = Command::new(&runtime.node_command);
     command
         .arg("src/index.js")
         .current_dir(&agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env("RIVERLUB_CONNECT_MANAGED", "1");
+        .env("RIVERLUB_CONNECT_MANAGED", "1")
+        .env("RIVERLUB_AGENT_RUNTIME_ORIGIN", &runtime.runtime_origin)
+        .env("RIVERLUB_AGENT_RUNTIME_DIR", display_path(&agent_dir));
 
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -333,7 +451,7 @@ fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, 
     let child = command.spawn().map_err(|error| {
         format!(
             "Nao foi possivel iniciar o agente WhatsApp com '{}': {}",
-            node_command, error
+            runtime.node_command, error
         )
     })?;
 
@@ -356,6 +474,7 @@ fn spawn_managed_agent(state: &AgentProcessState) -> Result<AgentProcessStatus, 
 
     build_process_status(
         state,
+        Some(app),
         Some("Agente WhatsApp iniciado pelo RiverLub Connect.".to_string()),
     )
 }
@@ -380,9 +499,10 @@ fn stop_managed_agent(state: &AgentProcessState) -> Result<bool, String> {
 
 #[tauri::command]
 fn agent_process_status(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AgentProcessState>,
 ) -> Result<AgentProcessStatus, String> {
-    build_process_status(&state, None)
+    build_process_status(&state, Some(&app), None)
 }
 
 #[tauri::command]
@@ -402,13 +522,15 @@ fn disconnect_agent_session() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn start_agent_process(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AgentProcessState>,
 ) -> Result<AgentProcessStatus, String> {
-    spawn_managed_agent(&state)
+    spawn_managed_agent(&state, &app)
 }
 
 #[tauri::command]
 fn stop_agent_process(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AgentProcessState>,
 ) -> Result<AgentProcessStatus, String> {
     let stopped = stop_managed_agent(&state)?;
@@ -423,11 +545,12 @@ fn stop_agent_process(
         "Nenhum processo gerenciado pelo RiverLub Connect estava em execucao.".to_string()
     };
 
-    build_process_status(&state, Some(message))
+    build_process_status(&state, Some(&app), Some(message))
 }
 
 #[tauri::command]
 fn restart_agent_process(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AgentProcessState>,
 ) -> Result<AgentProcessStatus, String> {
     let stopped = stop_managed_agent(&state)?;
@@ -436,6 +559,7 @@ fn restart_agent_process(
     if is_agent_port_open() && !stopped {
         return build_process_status(
             &state,
+            Some(&app),
             Some(
                 "Agente externo ja esta ocupando a porta 47851. Reinicio completo exige fechar o .cmd atual."
                     .to_string(),
@@ -443,12 +567,12 @@ fn restart_agent_process(
         );
     }
 
-    spawn_managed_agent(&state)
+    spawn_managed_agent(&state, &app)
 }
 
 #[tauri::command]
-fn read_agent_logs(limit: Option<usize>) -> Result<AgentLogResponse, String> {
-    let paths = resolve_agent_paths();
+fn read_agent_logs(app: tauri::AppHandle, limit: Option<usize>) -> Result<AgentLogResponse, String> {
+    let paths = resolve_agent_paths(Some(&app));
     let limit = limit.unwrap_or(80).clamp(1, 300);
     let log_path = PathBuf::from(&paths.log_path);
 
@@ -480,8 +604,8 @@ fn read_agent_logs(limit: Option<usize>) -> Result<AgentLogResponse, String> {
 }
 
 #[tauri::command]
-fn clear_agent_logs() -> Result<AgentMaintenanceResponse, String> {
-    let paths = resolve_agent_paths();
+fn clear_agent_logs(app: tauri::AppHandle) -> Result<AgentMaintenanceResponse, String> {
+    let paths = resolve_agent_paths(Some(&app));
     let log_path = PathBuf::from(&paths.log_path);
 
     if let Some(parent) = log_path.parent() {

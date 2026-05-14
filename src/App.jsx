@@ -38,7 +38,7 @@ import {
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
 
-const CONNECT_VERSION = "0.1.1";
+const CONNECT_VERSION = "0.2.0";
 const LOCAL_AGENT_PORT = 47851;
 const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
 const RELEASE_URL =
@@ -1023,6 +1023,22 @@ function App() {
               <div>
                 <dt>Origem do processo</dt>
                 <dd>{getProcessOrigin(processState)}</dd>
+              </div>
+              <div>
+                <dt>Runtime do agente</dt>
+                <dd>{processState?.paths?.runtimeOrigin || health?.runtime_origin || "-"}</dd>
+              </div>
+              <div>
+                <dt>Node do Connect</dt>
+                <dd>
+                  {processState?.paths?.nodeVersion
+                    ? `${processState.paths.nodeVersion} | ${processState.paths.nodeCommand}`
+                    : processState?.paths?.nodeCommand || "-"}
+                </dd>
+              </div>
+              <div>
+                <dt>Agente em uso</dt>
+                <dd>{processState?.paths?.agentDir || health?.runtime_dir || "-"}</dd>
               </div>
               <div>
                 <dt>Versao do agente</dt>

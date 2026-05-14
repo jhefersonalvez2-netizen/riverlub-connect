@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RiverLub Connect",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "br.com.riverlub.connect",
   "build": {
     "beforeDevCommand": "npm run dev:ui",
@@ -40,6 +40,13 @@
     "category": "Business",
     "shortDescription": "Integracoes locais do RiverLub",
     "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows.",
+    "resources": {
+      "../vendor/node/node.exe": "runtime/node/node.exe",
+      "../../backend/whatsapp-agent/src": "runtime/whatsapp-agent/src",
+      "../../backend/whatsapp-agent/package.json": "runtime/whatsapp-agent/package.json",
+      "../../backend/whatsapp-agent/package-lock.json": "runtime/whatsapp-agent/package-lock.json",
+      "../../backend/whatsapp-agent/node_modules": "runtime/whatsapp-agent/node_modules"
+    },
     "windows": {
       "allowDowngrades": false,
       "nsis": {

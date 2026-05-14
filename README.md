@@ -18,12 +18,13 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 - Permite **Resetar sessao de teste** somente com confirmacao explicita.
 - Mantem o painel Web apenas como status, atalho e download.
 - Registra `riverlub-connect://` no instalador NSIS para abrir/focar o app pelo painel Web.
+- Empacota runtime proprio em `runtime/`: Node.js e `whatsapp-agent` com dependencias.
 
 ## Fluxo tecnico
 
 1. O usuario abre o RiverLub Connect.
 2. Clica em **Conectar WhatsApp**.
-3. Se o agente nao estiver rodando, o Connect inicia `node src/index.js` em `backend/whatsapp-agent`.
+3. Se o agente nao estiver rodando, o Connect inicia `runtime/node/node.exe src/index.js` em `runtime/whatsapp-agent`.
 4. O agente abre `whatsapp-web.js` com `LocalAuth` usando `%APPDATA%/RiverLub/whatsapp-agent/session`.
 5. Quando o WhatsApp emite `qr`, o agente gera `qr_data_url`, guarda em memoria e expoe em `GET /qr` e `GET /health`.
 6. O Connect mostra o QR real.
@@ -58,6 +59,18 @@ src-tauri/target/release/bundle/nsis
 ```
 
 Nao commitar `node_modules`, `dist`, `src-tauri/target`, `.cargo-*-target`, instaladores ou builds.
+
+O build inclui recursos vindos de:
+
+```text
+vendor/node/node.exe
+../backend/whatsapp-agent/src
+../backend/whatsapp-agent/package.json
+../backend/whatsapp-agent/package-lock.json
+../backend/whatsapp-agent/node_modules
+```
+
+`vendor/node/node.exe` e binario local de build e nao deve ser versionado.
 
 ## Distribuicao
 
@@ -96,11 +109,11 @@ Base atual:
 - Protocolo `riverlub-connect://` registrado pelo instalador.
 - Single instance ativo.
 - Binario Windows em subsistema GUI, sem abrir console/CMD.
+- Runtime Node/agent empacotado no instalador.
 
 Pendencias antes de entregar em massa:
 
 - Assinatura digital do executavel.
-- Empacotar o agente como sidecar ou runtime controlado, sem depender de Node no PATH.
 - Decidir se Puppeteer/Chromium sera embutido ou se Chrome/Edge local sera requisito.
 - Pipeline de release no GitHub.
 - Teste em Windows limpo, usuario sem permissao admin, SmartScreen e antivirus.
