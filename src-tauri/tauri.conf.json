@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RiverLub Connect",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "identifier": "br.com.riverlub.connect",
   "build": {
     "beforeDevCommand": "npm run dev:ui",

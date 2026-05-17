@@ -38,7 +38,7 @@ import {
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
 
-const CONNECT_VERSION = "0.2.2";
+const CONNECT_VERSION = "0.3.0";
 const LOCAL_AGENT_PORT = 47851;
 const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub.com.br/whatsapp";
 const RELEASE_URL =

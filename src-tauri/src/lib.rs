@@ -1095,20 +1095,23 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(AgentProcessState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             handle_deep_link_args(app, args);
+            let state = app.state::<AgentProcessState>();
+            let _ = spawn_managed_agent(&state, app);
         }))
-        .manage(AgentProcessState::default())
         .setup(|app| {
             let state = app.state::<AgentProcessState>();
             let _ = cleanup_orphaned_runtime_processes(&state, app.handle());
+            let _ = spawn_managed_agent(&state, app.handle());
             handle_deep_link_args(app.handle(), env::args().collect());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                let state = window.state::<AgentProcessState>();
-                let _ = stop_managed_agent(&state);
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
