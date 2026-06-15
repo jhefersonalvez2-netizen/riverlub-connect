@@ -9,6 +9,7 @@ export default function SystemPageShell({
   cards = [],
   filters = [],
   tableRows = [],
+  metricsClassName = "",
   emptyTitle,
   emptyDetail,
 }) {
@@ -45,7 +46,7 @@ export default function SystemPageShell({
       </header>
 
       {cards.length > 0 ? (
-        <section className="rl-web-metrics">
+        <section className={`rl-web-metrics${metricsClassName ? ` ${metricsClassName}` : ""}`}>
           {cards.map((card) => (
             <article className="rl-web-card" key={card.label}>
               <div className="rl-web-card-head">

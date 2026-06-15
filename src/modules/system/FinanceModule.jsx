@@ -18,6 +18,7 @@ export default function FinanceModule() {
         { label: "Pagamentos", value: "Recebidos", detail: "Registro futuro em /desktop/finance/payments." },
         { label: "Recibos", value: "Integracao", detail: "Documento e WhatsApp em etapa posterior." },
       ]}
+      metricsClassName="rl-finance-kpi-grid financeiro"
       emptyTitle="Financeiro aguardando API desktop"
       emptyDetail="A tela esta pronta para GET /desktop/finance/summary e pagamentos recebidos."
     />
