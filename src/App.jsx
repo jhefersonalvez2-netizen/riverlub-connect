@@ -1,27 +1,20 @@
 import {
   Activity,
   AlertTriangle,
-  Bot,
   CheckCircle2,
   Clock3,
   Copy,
-  Database,
   Download,
   ExternalLink,
   FileText,
-  Headphones,
-  Home,
-  LayoutDashboard,
   Loader2,
   LogOut,
   PlayCircle,
   QrCode,
   RefreshCw,
-  Settings,
   ShieldCheck,
   Square,
   Trash2,
-  Wifi,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -42,12 +35,18 @@ import {
   STATUS_META,
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
+import DesktopShell from "./desktop/DesktopShell";
 import BrainModule from "./modules/brain/BrainModule";
 import CockpitModule from "./modules/cockpit/CockpitModule";
+import CustomersModule from "./modules/customers/CustomersModule";
+import DashboardModule from "./modules/dashboard/DashboardModule";
 import DiagnosticsModule from "./modules/diagnostics/DiagnosticsModule";
-import HomeModule from "./modules/home/HomeModule";
+import FinanceModule from "./modules/finance/FinanceModule";
+import QuotesModule from "./modules/quotes/QuotesModule";
+import ServiceOrdersModule from "./modules/serviceOrders/ServiceOrdersModule";
 import SettingsModule from "./modules/settings/SettingsModule";
-import SystemModule from "./modules/system/SystemModule";
+import StockModule from "./modules/stock/StockModule";
+import VehiclesModule from "./modules/vehicles/VehiclesModule";
 
 const CONNECT_VERSION = "0.3.0";
 const LOCAL_AGENT_PORT = 47851;
@@ -56,70 +55,56 @@ const RELEASE_URL =
   import.meta.env.VITE_RIVERLUB_CONNECT_RELEASE_URL ||
   "https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest";
 
-const DESKTOP_MODULES = [
-  {
-    key: "home",
-    label: "Inicio",
-    detail: "Visao central",
-    icon: Home,
-  },
-  {
-    key: "attendance",
-    label: "Atendimento",
-    detail: "Cockpit",
-    icon: Headphones,
-  },
-  {
-    key: "system",
-    label: "Sistema",
-    detail: "Operacao nativa",
-    icon: LayoutDashboard,
-  },
-  {
-    key: "whatsapp",
-    label: "WhatsApp",
-    detail: "Connect atual",
-    icon: Wifi,
-  },
-  {
-    key: "brain",
-    label: "Brain",
-    detail: "IA segura",
-    icon: Bot,
-  },
-  {
-    key: "diagnostics",
-    label: "Diagnosticos",
-    detail: "Auditoria",
-    icon: Database,
-  },
-  {
-    key: "settings",
-    label: "Configuracoes",
-    detail: "Preferencias",
-    icon: Settings,
-  },
-];
+function WhatsappPlaceholderModule({ title, description }) {
+  return (
+    <div className="rl-web-page">
+      <header className="rl-web-page-head">
+        <div>
+          <p className="rl-web-eyebrow">WhatsApp</p>
+          <h1 className="rl-web-page-title">{title}</h1>
+          <p className="rl-web-page-subtitle">{description}</p>
+        </div>
+      </header>
 
-function isActiveDesktopModule(activeModule, moduleKey) {
-  if (moduleKey === "system") return activeModule === "system" || activeModule.startsWith("system:");
-
-  return activeModule === moduleKey;
+      <section className="rl-web-empty">
+        <ShieldCheck size={32} />
+        <strong>Area preparada dentro do WhatsApp</strong>
+        <small>
+          Esta etapa reorganiza a experiencia visual. As rotas reais do Brain, templates e configuracoes
+          entram depois, sem automatizar envio e sem mexer no web.
+        </small>
+      </section>
+    </div>
+  );
 }
 
-function getSystemSectionFromModule(activeModule) {
-  if (!activeModule.startsWith("system:")) return "dashboard";
-
-  return activeModule.split(":")[1] || "dashboard";
-}
-
-function DesktopModuleContent({ activeModule, onNavigate, whatsappStatus }) {
-  if (activeModule === "home") return <HomeModule onNavigate={onNavigate} whatsappStatus={whatsappStatus} />;
-  if (activeModule === "attendance") return <CockpitModule />;
-  if (activeModule === "brain") return <BrainModule />;
-  if (activeModule === "system" || activeModule.startsWith("system:")) {
-    return <SystemModule initialSection={getSystemSectionFromModule(activeModule)} />;
+function DesktopModuleContent({ activeModule }) {
+  if (activeModule === "dashboard") return <DashboardModule />;
+  if (activeModule === "customers") return <CustomersModule />;
+  if (activeModule === "vehicles") return <VehiclesModule />;
+  if (activeModule === "service-orders") return <ServiceOrdersModule />;
+  if (activeModule === "quotes") return <QuotesModule />;
+  if (activeModule === "stock") return <StockModule />;
+  if (activeModule === "finance") return <FinanceModule />;
+  if (activeModule === "whatsapp:cockpit") return <CockpitModule />;
+  if (activeModule === "whatsapp:brain") return <BrainModule />;
+  if (activeModule === "whatsapp:templates") {
+    return (
+      <WhatsappPlaceholderModule
+        title="Templates do WhatsApp"
+        description="Mensagens padrao da oficina, preparadas para aprovacao humana e envio seguro."
+      />
+    );
   }
+  if (activeModule === "whatsapp:settings") {
+    return (
+      <WhatsappPlaceholderModule
+        title="Configuracoes do WhatsApp"
+        description="Politicas de atendimento, opt-out e limites de automacao do canal WhatsApp."
+      />
+    );
+  }
+  if (activeModule === "whatsapp:logs") return <DiagnosticsModule />;
   if (activeModule === "diagnostics") return <DiagnosticsModule />;
   if (activeModule === "settings") return <SettingsModule />;
 
@@ -493,7 +478,7 @@ function getToneDot(tone) {
 }
 
 function App() {
-  const [activeModule, setActiveModule] = useState("home");
+  const [activeModule, setActiveModule] = useState("dashboard");
   const [status, setStatus] = useState(AGENT_STATUS.STOPPED);
   const [health, setHealth] = useState(null);
   const [processState, setProcessState] = useState(null);
@@ -722,7 +707,7 @@ function App() {
 
   const metrics = useMemo(() => [
     {
-      label: "Connect",
+      label: "Agente",
       value: "Pronto",
       foot: `v${CONNECT_VERSION} | Windows local`,
       tone: "success",
@@ -931,63 +916,15 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <aside className="side-panel">
-        <div className="brand-lockup">
-          <div className="brand-mark">RL</div>
-          <div>
-            <div className="brand-name">RiverLub</div>
-            <div className="brand-subtitle">Desktop</div>
-          </div>
-        </div>
-
-        <nav className="module-list" aria-label="Modulos locais">
-          {DESKTOP_MODULES.map((module) => {
-            const Icon = module.icon;
-
-            return (
-              <button
-                className={`module-item ${isActiveDesktopModule(activeModule, module.key) ? "active" : ""}`}
-                type="button"
-                onClick={() => setActiveModule(module.key)}
-                key={module.key}
-              >
-                <Icon size={18} />
-                <span>
-                  <strong>{module.label}</strong>
-                  <small>{module.detail}</small>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="connect-readiness">
-          <span className={getToneDot("success")} />
-          <div>
-            <strong>Connect pronto</strong>
-            <small>Base local do RiverLub Desktop, com WhatsApp preservado.</small>
-          </div>
-        </div>
-
-        <div className="side-note">
-          <span>Seguranca local</span>
-          <strong>Sem terminal para a oficina</strong>
-          <small>
-            O Desktop so encerra processos que ele criou e mantem chaves privilegiadas fora da interface.
-          </small>
-        </div>
-      </aside>
-
-      <section className="main-panel">
-        {activeModule === "whatsapp" ? (
-          <>
+    <DesktopShell activeKey={activeModule} onNavigate={setActiveModule}>
+      {activeModule === "whatsapp:connect" ? (
+        <div className="rl-whatsapp-workspace rl-connect-contained">
         <header className="topbar">
           <div>
-            <p className="eyebrow">WhatsApp local</p>
-            <h1>Central RiverLub Connect</h1>
+            <p className="eyebrow">WhatsApp</p>
+            <h1>Agente / Connect</h1>
             <p className="intro">
-              Inicie o agente, leia o QR real e acompanhe a sessao da oficina em um unico lugar.
+              Pareamento, runtime local e logs do WhatsApp dentro do RiverLub Desktop.
             </p>
           </div>
           <div className={`status-pill ${meta.tone}`} aria-live="polite">
@@ -1413,20 +1350,11 @@ function App() {
             ))}
           </div>
         </section>
-          </>
-        ) : (
-          <DesktopModuleContent
-            activeModule={activeModule}
-            onNavigate={setActiveModule}
-            whatsappStatus={{
-              connected: whatsappFlags.connected,
-              label: meta.label,
-              tone: meta.tone,
-            }}
-          />
-        )}
-      </section>
-    </main>
+        </div>
+      ) : (
+        <DesktopModuleContent activeModule={activeModule} />
+      )}
+    </DesktopShell>
   );
 }
 

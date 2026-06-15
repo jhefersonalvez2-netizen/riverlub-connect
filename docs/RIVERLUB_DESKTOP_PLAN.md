@@ -14,6 +14,8 @@ O Desktop nao sera apenas um navegador embutido do web. As telas principais sera
 
 O web atual continua preservado em producao. Nenhuma rota existente do web deve ser quebrada para montar o Desktop. Quando dados reais forem conectados, o Desktop deve consumir backend seguro, preferencialmente por rotas dedicadas `/desktop/*`, compartilhando regras de negocio sem copiar segredo para o cliente.
 
+Decisao visual desta fase: o sistema operacional RiverLub passa a ser o centro do Desktop. A casca visual deve espelhar o web atual da oficina, com sidebar, topbar, cards, filtros e tabelas no padrao `rl-*`. O Connect nao e mais tela principal; ele e uma area interna do menu WhatsApp.
+
 O Supabase nao deve ser acessado com `SUPABASE_SERVICE_ROLE_KEY` pelo app desktop. Qualquer operacao privilegiada passa pelo backend seguro ou por agente local protegido e autenticado. A interface Tauri/React pode usar apenas dados publicos controlados, anon key com RLS forte quando fizer sentido, ou API segura.
 
 Brain, WhatsApp e Cockpit devem ficar integrados ao fluxo operacional:
@@ -23,6 +25,7 @@ Brain, WhatsApp e Cockpit devem ficar integrados ao fluxo operacional:
 - WhatsApp Connect segue como runtime local confiavel;
 - Sistema nativo organiza clientes, veiculos, O.S., orcamentos, estoque e financeiro sem iframe do web;
 - Diagnosticos e Configuracoes apoiam a operacao local sem parecer ferramentas separadas.
+- WhatsApp agrupa Agente / Connect, Cockpit, Brain, Templates, Configuracoes e Logs / Diagnostico.
 
 ## Estado atual auditado
 
@@ -55,6 +58,14 @@ src/modules/cockpit
 src/modules/system
 src/modules/diagnostics
 src/modules/settings
+src/modules/dashboard
+src/modules/customers
+src/modules/vehicles
+src/modules/serviceOrders
+src/modules/quotes
+src/modules/stock
+src/modules/finance
+src/desktop
 src/lib/localAgentClient.js
 src/lib/desktopDataProvider.js
 ```
@@ -64,6 +75,21 @@ src/lib/desktopDataProvider.js
 ### WhatsApp
 
 O modulo atual continua operacional no `App.jsx` nesta primeira etapa. Ele segue usando o agente local existente e os comandos Tauri ja aprovados.
+
+O acesso visual ao Connect fica em:
+
+```text
+WhatsApp > Agente / Connect
+```
+
+Submenus preparados:
+
+- Agente / Connect;
+- Cockpit;
+- Brain;
+- Templates;
+- Configuracoes;
+- Logs / Diagnostico.
 
 Proxima etapa: extrair a tela WhatsApp para `src/modules/whatsapp/WhatsAppModule.jsx`, depois de validar que a navegacao nova nao afetou pareamento, logs e controle de processo.
 
