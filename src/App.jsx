@@ -9,13 +9,15 @@ import {
   Download,
   ExternalLink,
   FileText,
+  Headphones,
+  Home,
   LayoutDashboard,
   Loader2,
   LogOut,
-  MessageSquare,
   PlayCircle,
   QrCode,
   RefreshCw,
+  Settings,
   ShieldCheck,
   Square,
   Trash2,
@@ -43,6 +45,8 @@ import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./ag
 import BrainModule from "./modules/brain/BrainModule";
 import CockpitModule from "./modules/cockpit/CockpitModule";
 import DiagnosticsModule from "./modules/diagnostics/DiagnosticsModule";
+import HomeModule from "./modules/home/HomeModule";
+import SettingsModule from "./modules/settings/SettingsModule";
 import SystemModule from "./modules/system/SystemModule";
 
 const CONNECT_VERSION = "0.3.0";
@@ -53,6 +57,24 @@ const RELEASE_URL =
   "https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest";
 
 const DESKTOP_MODULES = [
+  {
+    key: "home",
+    label: "Inicio",
+    detail: "Visao central",
+    icon: Home,
+  },
+  {
+    key: "attendance",
+    label: "Atendimento",
+    detail: "Cockpit",
+    icon: Headphones,
+  },
+  {
+    key: "system",
+    label: "Sistema",
+    detail: "Operacao nativa",
+    icon: LayoutDashboard,
+  },
   {
     key: "whatsapp",
     label: "WhatsApp",
@@ -66,30 +88,40 @@ const DESKTOP_MODULES = [
     icon: Bot,
   },
   {
-    key: "cockpit",
-    label: "Cockpit",
-    detail: "Conversas",
-    icon: MessageSquare,
-  },
-  {
-    key: "system",
-    label: "Sistema",
-    detail: "Politicas",
-    icon: LayoutDashboard,
-  },
-  {
     key: "diagnostics",
     label: "Diagnosticos",
     detail: "Auditoria",
     icon: Database,
   },
+  {
+    key: "settings",
+    label: "Configuracoes",
+    detail: "Preferencias",
+    icon: Settings,
+  },
 ];
 
-function DesktopModuleContent({ activeModule }) {
+function isActiveDesktopModule(activeModule, moduleKey) {
+  if (moduleKey === "system") return activeModule === "system" || activeModule.startsWith("system:");
+
+  return activeModule === moduleKey;
+}
+
+function getSystemSectionFromModule(activeModule) {
+  if (!activeModule.startsWith("system:")) return "dashboard";
+
+  return activeModule.split(":")[1] || "dashboard";
+}
+
+function DesktopModuleContent({ activeModule, onNavigate, whatsappStatus }) {
+  if (activeModule === "home") return <HomeModule onNavigate={onNavigate} whatsappStatus={whatsappStatus} />;
+  if (activeModule === "attendance") return <CockpitModule />;
   if (activeModule === "brain") return <BrainModule />;
-  if (activeModule === "cockpit") return <CockpitModule />;
-  if (activeModule === "system") return <SystemModule />;
+  if (activeModule === "system" || activeModule.startsWith("system:")) {
+    return <SystemModule initialSection={getSystemSectionFromModule(activeModule)} />;
+  }
   if (activeModule === "diagnostics") return <DiagnosticsModule />;
+  if (activeModule === "settings") return <SettingsModule />;
 
   return null;
 }
@@ -461,7 +493,7 @@ function getToneDot(tone) {
 }
 
 function App() {
-  const [activeModule, setActiveModule] = useState("whatsapp");
+  const [activeModule, setActiveModule] = useState("home");
   const [status, setStatus] = useState(AGENT_STATUS.STOPPED);
   const [health, setHealth] = useState(null);
   const [processState, setProcessState] = useState(null);
@@ -915,7 +947,7 @@ function App() {
 
             return (
               <button
-                className={`module-item ${activeModule === module.key ? "active" : ""}`}
+                className={`module-item ${isActiveDesktopModule(activeModule, module.key) ? "active" : ""}`}
                 type="button"
                 onClick={() => setActiveModule(module.key)}
                 key={module.key}
@@ -1383,7 +1415,15 @@ function App() {
         </section>
           </>
         ) : (
-          <DesktopModuleContent activeModule={activeModule} />
+          <DesktopModuleContent
+            activeModule={activeModule}
+            onNavigate={setActiveModule}
+            whatsappStatus={{
+              connected: whatsappFlags.connected,
+              label: meta.label,
+              tone: meta.tone,
+            }}
+          />
         )}
       </section>
     </main>

@@ -8,8 +8,8 @@ export default function CockpitModule() {
     <div className="desktop-module">
       <header className="topbar desktop-module-topbar">
         <div>
-          <p className="eyebrow">Cockpit</p>
-          <h1>Conversas e atendimento</h1>
+          <p className="eyebrow">Atendimento</p>
+          <h1>Cockpit de conversas</h1>
           <p className="intro">
             Estrutura inicial para acompanhar conversas, rascunhos e passagem para atendimento humano.
           </p>

@@ -1,95 +1,107 @@
-import { Database, MonitorCog, ShieldCheck } from "lucide-react";
 import {
-  DESKTOP_DATA_SECURITY_POLICY,
-  getDesktopModuleStatus,
-  getDesktopSupabaseGuidance,
-} from "../../lib/desktopDataProvider";
+  CarFront,
+  CircleDollarSign,
+  ClipboardList,
+  FileText,
+  LayoutDashboard,
+  PackageSearch,
+  Users,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import CustomersModule from "./CustomersModule";
+import FinanceModule from "./FinanceModule";
+import QuotesModule from "./QuotesModule";
+import ServiceOrdersModule from "./ServiceOrdersModule";
+import StockModule from "./StockModule";
+import SystemDashboard from "./SystemDashboard";
+import VehiclesModule from "./VehiclesModule";
 
-export default function SystemModule() {
-  const modules = getDesktopModuleStatus();
-  const supabase = getDesktopSupabaseGuidance();
+const SYSTEM_SECTIONS = [
+  {
+    key: "dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    component: SystemDashboard,
+  },
+  {
+    key: "customers",
+    label: "Clientes",
+    icon: Users,
+    component: CustomersModule,
+  },
+  {
+    key: "vehicles",
+    label: "Veiculos",
+    icon: CarFront,
+    component: VehiclesModule,
+  },
+  {
+    key: "service-orders",
+    label: "Ordens de Servico",
+    icon: ClipboardList,
+    component: ServiceOrdersModule,
+  },
+  {
+    key: "quotes",
+    label: "Orcamentos",
+    icon: FileText,
+    component: QuotesModule,
+  },
+  {
+    key: "stock",
+    label: "Estoque",
+    icon: PackageSearch,
+    component: StockModule,
+  },
+  {
+    key: "finance",
+    label: "Financeiro",
+    icon: CircleDollarSign,
+    component: FinanceModule,
+  },
+];
+
+function getValidSection(section) {
+  return SYSTEM_SECTIONS.some((item) => item.key === section) ? section : "dashboard";
+}
+
+export default function SystemModule({ initialSection = "dashboard" }) {
+  const [activeSection, setActiveSection] = useState(() => getValidSection(initialSection));
+  const section = SYSTEM_SECTIONS.find((item) => item.key === activeSection) || SYSTEM_SECTIONS[0];
+  const ActiveComponent = section.component;
+
+  useEffect(() => {
+    setActiveSection(getValidSection(initialSection));
+  }, [initialSection]);
 
   return (
-    <div className="desktop-module">
-      <header className="topbar desktop-module-topbar">
+    <div className="desktop-module system-shell">
+      <aside className="system-subnav" aria-label="Submodulos do sistema">
         <div>
-          <p className="eyebrow">Sistema</p>
-          <h1>Arquitetura local</h1>
-          <p className="intro">
-            Painel inicial para status dos modulos, politicas locais e fronteira segura de dados.
-          </p>
+          <p className="eyebrow">Sistema nativo</p>
+          <h2>RiverLub</h2>
         </div>
-        <div className="status-pill success">
-          <ShieldCheck size={18} />
-          Service role fora do desktop
+        <div className="system-subnav-list">
+          {SYSTEM_SECTIONS.map((item) => {
+            const Icon = item.icon;
+
+            return (
+              <button
+                className={`system-subnav-item ${activeSection === item.key ? "active" : ""}`}
+                type="button"
+                onClick={() => setActiveSection(item.key)}
+                key={item.key}
+              >
+                <Icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
         </div>
-      </header>
+      </aside>
 
-      <section className="desktop-card-grid">
-        {modules.map((module) => (
-          <article className="desktop-info-card" key={module.key}>
-            <div className="desktop-info-head">
-              <MonitorCog size={18} />
-              <strong>{module.title}</strong>
-            </div>
-            <p>{module.status}</p>
-            <small>{module.detail}</small>
-          </article>
-        ))}
-      </section>
-
-      <section className="desktop-two-col">
-        <article className="details-panel desktop-module-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Supabase</p>
-              <h2>Fronteira de dados</h2>
-            </div>
-            <Database size={20} />
-          </div>
-          <dl className="detail-list compact">
-            <div>
-              <dt>Cliente recomendado</dt>
-              <dd>{supabase.recommendedClient}</dd>
-            </div>
-            <div>
-              <dt>Acesso direto desktop</dt>
-              <dd>{supabase.desktopDirectAccess}</dd>
-            </div>
-            <div>
-              <dt>Acesso privilegiado</dt>
-              <dd>{supabase.privilegedAccess}</dd>
-            </div>
-          </dl>
-        </article>
-
-        <article className="details-panel desktop-module-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Politica</p>
-              <h2>Padroes seguros</h2>
-            </div>
-            <ShieldCheck size={20} />
-          </div>
-          <dl className="detail-list compact">
-            <div>
-              <dt>Auto reply</dt>
-              <dd>{DESKTOP_DATA_SECURITY_POLICY.autoReplyDefault ? "ligado" : "desligado"}</dd>
-            </div>
-            <div>
-              <dt>Grupos</dt>
-              <dd>{DESKTOP_DATA_SECURITY_POLICY.groupsDefault ? "permitidos" : "bloqueados"}</dd>
-            </div>
-            <div>
-              <dt>Aprovacao humana</dt>
-              <dd>{DESKTOP_DATA_SECURITY_POLICY.sendRequiresHumanApproval ? "obrigatoria" : "opcional"}</dd>
-            </div>
-            <div>
-              <dt>Privilegio</dt>
-              <dd>{DESKTOP_DATA_SECURITY_POLICY.privilegedAccess}</dd>
-            </div>
-          </dl>
-        </article>
+      <section className="system-content">
+        <ActiveComponent />
       </section>
     </div>
   );

@@ -6,6 +6,24 @@ Transformar o `riverlub-connect` em uma base profissional do **RiverLub Desktop*
 
 Esta etapa e propositalmente conservadora: cria a estrutura visual e tecnica sem alterar o web RiverLub, sem trocar o agente WhatsApp atual e sem expor credenciais privilegiadas.
 
+## Visao final do RiverLub Desktop
+
+O RiverLub Desktop sera a central operacional completa da oficina em Windows. Ele deve reunir WhatsApp Connect, Brain, Cockpit e o sistema operacional RiverLub em uma experiencia unica, rapida e profissional.
+
+O Desktop nao sera apenas um navegador embutido do web. As telas principais serao nativas do app desktop, com componentes proprios, navegacao propria e integracao local preparada para impressora, scanner, offline e recursos do Windows.
+
+O web atual continua preservado em producao. Nenhuma rota existente do web deve ser quebrada para montar o Desktop. Quando dados reais forem conectados, o Desktop deve consumir backend seguro, preferencialmente por rotas dedicadas `/desktop/*`, compartilhando regras de negocio sem copiar segredo para o cliente.
+
+O Supabase nao deve ser acessado com `SUPABASE_SERVICE_ROLE_KEY` pelo app desktop. Qualquer operacao privilegiada passa pelo backend seguro ou por agente local protegido e autenticado. A interface Tauri/React pode usar apenas dados publicos controlados, anon key com RLS forte quando fizer sentido, ou API segura.
+
+Brain, WhatsApp e Cockpit devem ficar integrados ao fluxo operacional:
+
+- atendimento abre conversa, cliente e O.S. no mesmo contexto;
+- Brain sugere, mas nao envia sozinho nesta etapa;
+- WhatsApp Connect segue como runtime local confiavel;
+- Sistema nativo organiza clientes, veiculos, O.S., orcamentos, estoque e financeiro sem iframe do web;
+- Diagnosticos e Configuracoes apoiam a operacao local sem parecer ferramentas separadas.
+
 ## Estado atual auditado
 
 - App Tauri v2 em `riverlub-connect`.
@@ -32,9 +50,11 @@ Esta etapa e propositalmente conservadora: cria a estrutura visual e tecnica sem
 ```text
 src/modules/whatsapp
 src/modules/brain
+src/modules/home
 src/modules/cockpit
 src/modules/system
 src/modules/diagnostics
+src/modules/settings
 src/lib/localAgentClient.js
 src/lib/desktopDataProvider.js
 ```
@@ -46,6 +66,16 @@ src/lib/desktopDataProvider.js
 O modulo atual continua operacional no `App.jsx` nesta primeira etapa. Ele segue usando o agente local existente e os comandos Tauri ja aprovados.
 
 Proxima etapa: extrair a tela WhatsApp para `src/modules/whatsapp/WhatsAppModule.jsx`, depois de validar que a navegacao nova nao afetou pareamento, logs e controle de processo.
+
+### Inicio
+
+Tela central criada para:
+
+- status do WhatsApp;
+- status do Brain;
+- status do sistema nativo;
+- atalhos de balcao;
+- lembrete discreto de que o web continua preservado.
 
 ### Brain
 
@@ -74,12 +104,17 @@ Sem envio automatico nesta etapa.
 
 ### Sistema
 
-Tela inicial criada para:
+Modulo criado com submodulos nativos:
 
-- status dos modulos;
-- politica de dados;
-- fronteira Supabase/backend;
-- resumo de seguranca.
+- Dashboard;
+- Clientes;
+- Veiculos;
+- Ordens de Servico;
+- Orcamentos;
+- Estoque;
+- Financeiro.
+
+As telas ainda usam placeholders seguros e `desktopDataProvider`, prontas para trocar por backend real depois.
 
 ### Diagnosticos
 
@@ -89,6 +124,10 @@ Tela inicial criada para:
 - verificacao de ambiente;
 - guarda de build contra service role e chaves privadas no desktop;
 - checklist de riscos.
+
+### Configuracoes
+
+Tela inicial criada para politicas locais, preferencias futuras, integracoes e confirmacao da fronteira segura de dados.
 
 ## Politica de IA
 
@@ -124,13 +163,14 @@ Operacoes privilegiadas devem passar por:
 
 ## Plano de proximas etapas
 
-1. Extrair WhatsApp para componente modular sem alterar comportamento.
-2. Definir contrato do Brain Agent em `127.0.0.1:47852`.
-3. Conectar Cockpit a conversas reais somente leitura.
-4. Adicionar controles de prompt/politica persistidos no backend seguro.
-5. Implementar allowlist e opt-out reais.
-6. Criar migracoes/RLS somente depois da revisao documentada em `SUPABASE_DESKTOP_AUDIT.md`.
-7. Adicionar testes de runtime Tauri em Windows limpo.
+1. Implementar backend seguro `/desktop/*` conforme `DESKTOP_BACKEND_CONTRACT.md`.
+2. Extrair WhatsApp para componente modular sem alterar comportamento.
+3. Definir contrato do Brain Agent em `127.0.0.1:47852`.
+4. Conectar Cockpit a conversas reais somente leitura.
+5. Adicionar controles de prompt/politica persistidos no backend seguro.
+6. Implementar allowlist e opt-out reais.
+7. Criar migracoes/RLS somente depois da revisao documentada em `SUPABASE_DESKTOP_AUDIT.md`.
+8. Adicionar testes de runtime Tauri em Windows limpo.
 
 ## Como rodar
 
