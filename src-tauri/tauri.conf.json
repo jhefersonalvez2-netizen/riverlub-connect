@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "RiverLub Connect",
+  "productName": "RiverLub Desktop",
   "version": "0.3.0",
   "identifier": "br.com.riverlub.connect",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "RiverLub Connect",
+        "title": "RiverLub Desktop",
         "width": 1040,
         "height": 720,
         "minWidth": 860,
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:47851 http://localhost:47851"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:47851 http://localhost:47851 http://127.0.0.1:47852 http://localhost:47852"
     }
   },
   "bundle": {
@@ -38,8 +38,8 @@
     ],
     "publisher": "RiverLub",
     "category": "Business",
-    "shortDescription": "Integracoes locais do RiverLub",
-    "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows.",
+    "shortDescription": "RiverLub Desktop para integracoes locais",
+    "longDescription": "Aplicativo desktop local para WhatsApp Connect, RiverLub Brain e modulos internos seguros no Windows.",
     "resources": {
       "../vendor/node/node.exe": "runtime/node/node.exe",
       "../../backend/whatsapp-agent/src": "runtime/whatsapp-agent/src",

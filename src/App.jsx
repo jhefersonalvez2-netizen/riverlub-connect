@@ -1,15 +1,18 @@
 import {
   Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Clock3,
   Copy,
+  Database,
   Download,
   ExternalLink,
   FileText,
+  LayoutDashboard,
   Loader2,
   LogOut,
-  MonitorCog,
+  MessageSquare,
   PlayCircle,
   QrCode,
   RefreshCw,
@@ -37,6 +40,10 @@ import {
   STATUS_META,
 } from "./agent/agentStatus";
 import { disconnectLocalAgent, getLocalAgentHealth, getLocalAgentQr } from "./agentClient";
+import BrainModule from "./modules/brain/BrainModule";
+import CockpitModule from "./modules/cockpit/CockpitModule";
+import DiagnosticsModule from "./modules/diagnostics/DiagnosticsModule";
+import SystemModule from "./modules/system/SystemModule";
 
 const CONNECT_VERSION = "0.3.0";
 const LOCAL_AGENT_PORT = 47851;
@@ -44,6 +51,48 @@ const PANEL_URL = import.meta.env.VITE_RIVERLUB_WEB_URL || "https://app.riverlub
 const RELEASE_URL =
   import.meta.env.VITE_RIVERLUB_CONNECT_RELEASE_URL ||
   "https://github.com/jhefersonalvez2-netizen/riverlub-connect/releases/latest";
+
+const DESKTOP_MODULES = [
+  {
+    key: "whatsapp",
+    label: "WhatsApp",
+    detail: "Connect atual",
+    icon: Wifi,
+  },
+  {
+    key: "brain",
+    label: "Brain",
+    detail: "IA segura",
+    icon: Bot,
+  },
+  {
+    key: "cockpit",
+    label: "Cockpit",
+    detail: "Conversas",
+    icon: MessageSquare,
+  },
+  {
+    key: "system",
+    label: "Sistema",
+    detail: "Politicas",
+    icon: LayoutDashboard,
+  },
+  {
+    key: "diagnostics",
+    label: "Diagnosticos",
+    detail: "Auditoria",
+    icon: Database,
+  },
+];
+
+function DesktopModuleContent({ activeModule }) {
+  if (activeModule === "brain") return <BrainModule />;
+  if (activeModule === "cockpit") return <CockpitModule />;
+  if (activeModule === "system") return <SystemModule />;
+  if (activeModule === "diagnostics") return <DiagnosticsModule />;
+
+  return null;
+}
 
 function formatDate(value) {
   if (!value) return "-";
@@ -412,6 +461,7 @@ function getToneDot(tone) {
 }
 
 function App() {
+  const [activeModule, setActiveModule] = useState("whatsapp");
   const [status, setStatus] = useState(AGENT_STATUS.STOPPED);
   const [health, setHealth] = useState(null);
   const [processState, setProcessState] = useState(null);
@@ -855,30 +905,36 @@ function App() {
           <div className="brand-mark">RL</div>
           <div>
             <div className="brand-name">RiverLub</div>
-            <div className="brand-subtitle">Connect</div>
+            <div className="brand-subtitle">Desktop</div>
           </div>
         </div>
 
         <nav className="module-list" aria-label="Modulos locais">
-          <button className="module-item active" type="button">
-            <Wifi size={18} />
-            WhatsApp
-          </button>
-          <button className="module-item" type="button" disabled>
-            <MonitorCog size={18} />
-            Impressoras
-          </button>
-          <button className="module-item" type="button" disabled>
-            <ShieldCheck size={18} />
-            Offline
-          </button>
+          {DESKTOP_MODULES.map((module) => {
+            const Icon = module.icon;
+
+            return (
+              <button
+                className={`module-item ${activeModule === module.key ? "active" : ""}`}
+                type="button"
+                onClick={() => setActiveModule(module.key)}
+                key={module.key}
+              >
+                <Icon size={18} />
+                <span>
+                  <strong>{module.label}</strong>
+                  <small>{module.detail}</small>
+                </span>
+              </button>
+            );
+          })}
         </nav>
 
         <div className="connect-readiness">
           <span className={getToneDot("success")} />
           <div>
             <strong>Connect pronto</strong>
-            <small>Centro local oficial do WhatsApp RiverLub.</small>
+            <small>Base local do RiverLub Desktop, com WhatsApp preservado.</small>
           </div>
         </div>
 
@@ -886,12 +942,14 @@ function App() {
           <span>Seguranca local</span>
           <strong>Sem terminal para a oficina</strong>
           <small>
-            O Connect so encerra processos que ele criou e mantem o QR restrito a 127.0.0.1.
+            O Desktop so encerra processos que ele criou e mantem chaves privilegiadas fora da interface.
           </small>
         </div>
       </aside>
 
       <section className="main-panel">
+        {activeModule === "whatsapp" ? (
+          <>
         <header className="topbar">
           <div>
             <p className="eyebrow">WhatsApp local</p>
@@ -1323,6 +1381,10 @@ function App() {
             ))}
           </div>
         </section>
+          </>
+        ) : (
+          <DesktopModuleContent activeModule={activeModule} />
+        )}
       </section>
     </main>
   );

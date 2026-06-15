@@ -1,6 +1,21 @@
-# RiverLub Connect
+# RiverLub Desktop
 
-RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLub no Windows. Nesta fase ele passa a ser o centro do fluxo do WhatsApp da oficina: inicia o agente local, mostra o QR real, acompanha a sessao, le logs e protege o usuario final de terminal, `.cmd` e detalhes tecnicos.
+RiverLub Desktop e o aplicativo local oficial do RiverLub no Windows. Ele preserva o **RiverLub Connect** para WhatsApp e abre a base para modulos internos como Brain, Cockpit, Sistema e Diagnosticos.
+
+Nesta fase, o WhatsApp Connect continua sendo o modulo operacional principal: inicia o agente local, mostra o QR real, acompanha a sessao, le logs e protege o usuario final de terminal, `.cmd` e detalhes tecnicos.
+
+## Modulos iniciais
+
+- **WhatsApp**: modulo Connect atual preservado, usando `127.0.0.1:47851`.
+- **Brain**: base visual segura para IA operacional, com modo manual e pausa global.
+- **Cockpit**: estrutura inicial de conversas e atendimento humano.
+- **Sistema**: politicas locais, fronteira de dados e status dos modulos.
+- **Diagnosticos**: verificacoes de ambiente, agentes locais e seguranca Supabase.
+
+Documentos da transformacao:
+
+- `docs/RIVERLUB_DESKTOP_PLAN.md`
+- `docs/SUPABASE_DESKTOP_AUDIT.md`
 
 ## O que o Connect faz agora
 
@@ -58,6 +73,8 @@ Isso evita instalacao parcial e erro de arquivo em uso em `runtime/node/node.exe
 - Limpeza automatica de runtime usa caminho exato do bundle instalado; nao usa `taskkill /IM node.exe` amplo.
 - Agente externo iniciado por `.cmd` ou terminal e monitorado, mas nao encerrado.
 - Deep link futuro nao deve executar acoes perigosas sozinho; deve apenas abrir a tela certa.
+- `SUPABASE_SERVICE_ROLE_KEY` nunca deve entrar no desktop distribuido, frontend, Tauri UI ou `.env.example`.
+- IA fica em modo manual por padrao; envio automatico exige etapa futura de seguranca, allowlist e aprovacao humana.
 
 ## Scripts
 
@@ -68,6 +85,8 @@ npm run build:ui
 npm run tauri:build
 npm run package
 ```
+
+Copie `.env.example` apenas para configurar URLs publicas/locais. Nao adicione service role, `DATABASE_URL` ou chaves OpenAI no desktop UI.
 
 `npm run tauri:build` e `npm run package` geram o instalador NSIS do Windows. O artefato fica em:
 
