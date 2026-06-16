@@ -113,6 +113,56 @@ error.code = UNAUTHORIZED
 
 ## Estrategia de autenticacao Desktop
 
+## Compatibilidade com o fluxo web
+
+A auditoria do web/backend esta documentada em:
+
+```text
+docs/WEB_BACKEND_FLOW_AUDIT.md
+```
+
+O Desktop deve seguir o mesmo contrato operacional do web:
+
+- autenticar pelo backend, usando `POST /api/auth/login`;
+- validar sessao com `GET /api/auth/me`;
+- encerrar sessao com `POST /api/auth/logout`;
+- usar `credentials: "include"` e cookie HttpOnly quando o Tauri permitir;
+- armazenar localmente apenas metadados seguros de usuario/sessao;
+- nunca armazenar senha;
+- nunca gravar cookie manualmente;
+- nunca criar bearer token no cliente sem decisao tecnica formal;
+- aplicar as mesmas permissoes por perfil antes de exibir navegacao e acoes.
+
+No web, `NEXT_PUBLIC_API_URL` ja aponta para a base com `/api`, por isso a tela de login chama caminhos como:
+
+```text
+${NEXT_PUBLIC_API_URL}/auth/login
+```
+
+No Desktop, `VITE_RIVERLUB_API_URL` deve apontar para a origem da API:
+
+```text
+https://api.riverlub.com.br
+```
+
+e o cliente desktop deve montar os caminhos completos:
+
+```text
+/api/auth/login
+/api/auth/me
+/api/auth/logout
+```
+
+Se o Desktop imitar a persistencia segura do web, ele pode manter apenas um payload equivalente a `riverlub_auth`, contendo `usuario` e metadados de `sessao` como `id` e `expira_em`. A autoridade da sessao continua sendo o cookie HttpOnly validado pelo backend.
+
+Os perfis atuais precisam permanecer equivalentes:
+
+- `ADMIN`: gestao geral, financeiro, pagamentos, relatorios, configuracoes, usuarios e WhatsApp.
+- `ATENDENTE`: operacao comercial/atendimento, O.S., clientes, veiculos, orcamentos, financeiro operacional, pagamentos e relatorios.
+- `MECANICO`: fila, O.S., clientes, veiculos, estoque consultivo e consulta tecnica, sem financeiro/pagamentos/relatorios administrativos.
+
+Recomendacao para a proxima fase: implementar login no Tauri somente apos validar, em ambiente real, se o cookie HttpOnly do backend persiste entre `POST /api/auth/login` e `GET /api/auth/me`. Se falhar por CORS, SameSite ou origem Tauri, a correcao deve ser projetada no backend com contrato proprio para Desktop, sem expor segredo no app.
+
 O backend atual usa sessao por cookie HttpOnly. O login existente recebe:
 
 ```json
