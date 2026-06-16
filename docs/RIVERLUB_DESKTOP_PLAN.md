@@ -189,6 +189,23 @@ Operacoes privilegiadas devem passar por:
 
 ## Plano de proximas etapas
 
+### Integracao com backend em fases
+
+A integracao do RiverLub Desktop com o backend seguro sera feita em fases para nao quebrar o web nem expor segredo no Tauri:
+
+1. **Health/auth**: testar `/health`, sessao atual e estrategia de autenticacao por cookie HttpOnly.
+2. **Leitura**: conectar Dashboard, O.S., Clientes, Veiculos e Financeiro somente leitura.
+3. **Criacao/edicao**: liberar operacoes com regras do backend, auditoria e permissao por perfil.
+4. **Recursos locais/offline**: preparar impressora, cache local, fila offline e sincronizacao segura.
+
+Documentacao tecnica desta etapa:
+
+```text
+docs/DESKTOP_BACKEND_INTEGRATION.md
+```
+
+### Lista operacional
+
 1. Implementar backend seguro `/desktop/*` conforme `DESKTOP_BACKEND_CONTRACT.md`.
 2. Extrair WhatsApp para componente modular sem alterar comportamento.
 3. Definir contrato do Brain Agent em `127.0.0.1:47852`.

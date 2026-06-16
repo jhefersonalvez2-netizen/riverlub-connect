@@ -2,6 +2,14 @@ const AUTO_REPLY_DEFAULT = import.meta.env.VITE_RIVERLUB_DESKTOP_AUTO_REPLY === 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 const BACKEND_CONTRACT_SOURCE = "backend_contract_pending";
+const BLOCKED_ENV_KEYS = [
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "VITE_SUPABASE_SERVICE_ROLE_KEY",
+  "DATABASE_URL",
+  "VITE_DATABASE_URL",
+  "OPENAI_API_KEY",
+  "VITE_OPENAI_API_KEY",
+];
 
 export const DESKTOP_DATA_SECURITY_POLICY = {
   serviceRoleInDesktop: false,
@@ -12,9 +20,18 @@ export const DESKTOP_DATA_SECURITY_POLICY = {
 };
 
 export function assertNoServiceRoleInDesktopEnv() {
+  const exposedBlockedKeys = BLOCKED_ENV_KEYS.filter((key) => Boolean(import.meta.env[key]));
+
+  if (exposedBlockedKeys.length > 0) {
+    return {
+      ok: false,
+      message: `Chaves bloqueadas expostas no desktop: ${exposedBlockedKeys.join(", ")}.`,
+    };
+  }
+
   return {
     ok: true,
-    message: "Build bloqueia service role e chaves privadas antes de gerar o desktop.",
+    message: "Build bloqueia service role, DATABASE_URL e OPENAI_API_KEY antes de gerar o desktop.",
   };
 }
 
@@ -31,6 +48,7 @@ export function getDesktopSecuritySummary() {
       "Envio automatico exige aprovacao humana nesta fase.",
       "Grupos ficam bloqueados ate politica explicita por oficina.",
       "Service role pertence somente ao backend seguro ou agente local protegido.",
+      "DATABASE_URL e OPENAI_API_KEY nao podem entrar no bundle Tauri.",
     ],
   };
 }
