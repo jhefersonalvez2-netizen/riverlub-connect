@@ -42,10 +42,9 @@
     "longDescription": "Aplicativo desktop local para rodar integracoes do RiverLub no Windows.",
     "resources": {
       "../vendor/node/node.exe": "runtime/node/node.exe",
-      "../../backend/whatsapp-agent/src": "runtime/whatsapp-agent/src",
-      "../../backend/whatsapp-agent/package.json": "runtime/whatsapp-agent/package.json",
-      "../../backend/whatsapp-agent/package-lock.json": "runtime/whatsapp-agent/package-lock.json",
-      "../../backend/whatsapp-agent/node_modules": "runtime/whatsapp-agent/node_modules"
+      "../vendor/whatsapp-agent/src": "runtime/whatsapp-agent/src",
+      "../vendor/whatsapp-agent/package.json": "runtime/whatsapp-agent/package.json",
+      "../vendor/whatsapp-agent/node_modules": "runtime/whatsapp-agent/node_modules"
     },
     "windows": {
       "allowDowngrades": false,
