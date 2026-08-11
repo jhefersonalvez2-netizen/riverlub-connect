@@ -1,0 +1,103 @@
+name: Release Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "src-tauri/**"
+      - "vendor/whatsapp-agent/**"
+      - ".github/workflows/release-windows.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Connect dependencies
+        run: npm ci
+
+      - name: Prepare bundled Node runtime
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force vendor/node | Out-Null
+          $nodePath = (Get-Command node.exe).Source
+          if (-not $nodePath) { throw "node.exe nao encontrado no runner" }
+          Copy-Item $nodePath vendor/node/node.exe -Force
+
+      - name: Install WhatsApp agent runtime dependencies
+        run: npm install --omit=dev --prefix vendor/whatsapp-agent
+
+      - name: Verify bundled agent version
+        shell: powershell
+        run: |
+          $agentVersion = node -p "require('./vendor/whatsapp-agent/package.json').version"
+          if ($agentVersion -ne "1.3.1") {
+            throw "Versao inesperada do agente: $agentVersion"
+          }
+
+      - name: Build NSIS installer
+        run: npm run tauri:build
+
+      - name: Define release metadata
+        id: release
+        shell: powershell
+        run: |
+          $version = node -p "require('./package.json').version"
+          $tag = "v$version"
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Instalador NSIS nao encontrado" }
+
+          $target = Join-Path $installer.DirectoryName "RiverLub Connect_${version}_x64-setup.exe"
+          if ($installer.FullName -ne $target) {
+            Copy-Item $installer.FullName $target -Force
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "installer=$target" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          INSTALLER: ${{ steps.release.outputs.installer }}
+        run: |
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $env:GITHUB_SHA `
+              --title "RiverLub Connect $env:TAG" `
+              --notes "RiverLub Connect $env:VERSION com agente WhatsApp 1.3.1 integrado, runtime Windows empacotado e correcoes de sessao LocalAuth."
+          }
+
+          gh release upload $env:TAG $env:INSTALLER --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RiverLub-Connect-Windows
+          path: ${{ steps.release.outputs.installer }}
+          if-no-files-found: error
