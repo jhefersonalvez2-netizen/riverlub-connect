@@ -84,8 +84,13 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
           INSTALLER: ${{ steps.release.outputs.installer }}
         run: |
-          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -ne 0) {
+          $existing = gh release list `
+            --repo $env:GITHUB_REPOSITORY `
+            --limit 100 `
+            --json tagName `
+            --jq ".[] | select(.tagName == `"$env:TAG`") | .tagName"
+
+          if (-not $existing) {
             gh release create $env:TAG `
               --repo $env:GITHUB_REPOSITORY `
               --target $env:GITHUB_SHA `
