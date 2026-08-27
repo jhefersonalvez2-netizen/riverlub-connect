@@ -72,20 +72,6 @@ jobs:
           if cargo.count(old_cargo) != 1:
               raise SystemExit("unexpected Cargo version declaration")
           cargo_path.write_text(cargo.replace(old_cargo, 'version = "0.3.1"', 1), encoding="utf-8")
-
-          release_path = Path(".github/workflows/release-windows.yml")
-          release = release_path.read_text(encoding="utf-8")
-          replacements = {
-              'run: npm install --omit=dev --prefix vendor/whatsapp-agent': 'run: npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent',
-              'if ($agentVersion -ne "1.3.1")': 'if ($agentVersion -ne "1.3.2")',
-              'agente WhatsApp 1.3.1 integrado': 'agente WhatsApp 1.3.2 integrado',
-          }
-          for old, new in replacements.items():
-              if release.count(old) != 1:
-                  raise SystemExit(f"release workflow expected one occurrence of: {old}")
-              release = release.replace(old, new, 1)
-          release_path.write_text(release, encoding="utf-8")
-
       - name: Refresh lockfiles
         shell: bash
         run: |
@@ -159,7 +145,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- "whatsapp riverlub brain" package.json package-lock.json vendor/whatsapp-agent/package.json vendor/whatsapp-agent/package-lock.json vendor/whatsapp-agent/src/index.js src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock .github/workflows/release-windows.yml
+          git add -A -- "whatsapp riverlub brain" package.json package-lock.json vendor/whatsapp-agent/package.json vendor/whatsapp-agent/package-lock.json vendor/whatsapp-agent/src/index.js src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git diff --cached --check
           git commit -m "chore: harden Connect release and remove legacy code"
           git push origin HEAD:chore/harden-ci-clean-legacy
