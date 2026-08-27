@@ -7,7 +7,7 @@ const qrcodeTerminal = require("qrcode-terminal");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
-const AGENT_VERSION = "1.3.1";
+const AGENT_VERSION = "1.3.2";
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);

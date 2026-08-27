@@ -1,0 +1,75 @@
+name: Connect CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate Connect UI
+        run: |
+          npm ci
+          npm run build:ui
+          npm audit --omit=dev --audit-level=high
+      - name: Validate bundled WhatsApp agent
+        run: |
+          npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
+          node --check vendor/whatsapp-agent/src/index.js
+          npm audit --omit=dev --json --prefix vendor/whatsapp-agent > /tmp/agent-audit.json || true
+      - name: Enforce agent security policy
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/agent-audit.json').read_text(encoding='utf-8'))
+          vulns = data.get('vulnerabilities', {}) or {}
+          severity_rank = {'info': 0, 'low': 1, 'moderate': 2, 'high': 3, 'critical': 4}
+          allowed_urls = {'https://github.com/advisories/GHSA-jmr9-qjv8-65gv'}
+
+          def atomic_advisories(name, seen=None):
+              seen = set() if seen is None else set(seen)
+              if name in seen:
+                  return [], []
+              seen.add(name)
+              vuln = vulns.get(name) or {}
+              advisories = []
+              unknown = []
+              for via in vuln.get('via', []) or []:
+                  if isinstance(via, dict):
+                      if severity_rank.get(str(via.get('severity', '')).lower(), 0) >= 3:
+                          advisories.append(via)
+                  elif isinstance(via, str):
+                      if via in vulns:
+                          nested, nested_unknown = atomic_advisories(via, seen)
+                          advisories.extend(nested)
+                          unknown.extend(nested_unknown)
+                      else:
+                          unknown.append(via)
+              return advisories, unknown
+
+          unexpected = []
+          for name, vuln in vulns.items():
+              if severity_rank.get(str(vuln.get('severity', '')).lower(), 0) < 3:
+                  continue
+              advisories, unknown = atomic_advisories(name)
+              urls = {str(item.get('url') or '').strip() for item in advisories if item.get('url')}
+              if unknown or not urls or not urls.issubset(allowed_urls):
+                  unexpected.append({'name': name, 'urls': sorted(urls), 'unknown': unknown})
+
+          if unexpected:
+              raise SystemExit(f'Unexpected high/critical agent advisories: {unexpected}')
+
+          print('Agent audit contains no unexpected high/critical advisory.')
