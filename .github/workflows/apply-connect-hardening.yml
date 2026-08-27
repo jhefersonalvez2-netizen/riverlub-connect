@@ -47,8 +47,17 @@ jobs:
           if agent.get("dependencies", {}).get("whatsapp-web.js") != "^1.34.6":
               raise SystemExit("unexpected whatsapp-web.js dependency")
           agent["version"] = "1.3.2"
-          agent["dependencies"]["whatsapp-web.js"] = "1.34.2"
           agent_pkg.write_text(json.dumps(agent, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+          agent_src = Path("vendor/whatsapp-agent/src/index.js")
+          source = agent_src.read_text(encoding="utf-8")
+          old_agent_version = 'const AGENT_VERSION = "1.3.1";'
+          if source.count(old_agent_version) != 1:
+              raise SystemExit("unexpected AGENT_VERSION declaration")
+          agent_src.write_text(
+              source.replace(old_agent_version, 'const AGENT_VERSION = "1.3.2";', 1),
+              encoding="utf-8",
+          )
 
           tauri_path = Path("src-tauri/tauri.conf.json")
           tauri = json.loads(tauri_path.read_text(encoding="utf-8"))
@@ -93,13 +102,64 @@ jobs:
         run: |
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node --check vendor/whatsapp-agent/src/index.js
-          npm audit --omit=dev --audit-level=high --prefix vendor/whatsapp-agent
+          npm audit --omit=dev --json --prefix vendor/whatsapp-agent > /tmp/agent-audit.json || true
+      - name: Enforce known-advisory policy for bundled agent
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("/tmp/agent-audit.json").read_text(encoding="utf-8"))
+          vulns = data.get("vulnerabilities", {}) or {}
+          severity_rank = {"info": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+          allowed_urls = {"https://github.com/advisories/GHSA-jmr9-qjv8-65gv"}
+
+          def atomic_advisories(name, seen=None):
+              seen = set() if seen is None else set(seen)
+              if name in seen:
+                  return [], []
+              seen.add(name)
+              vuln = vulns.get(name) or {}
+              advisories = []
+              unknown = []
+              for via in vuln.get("via", []) or []:
+                  if isinstance(via, dict):
+                      if severity_rank.get(str(via.get("severity", "")).lower(), 0) >= 3:
+                          advisories.append(via)
+                  elif isinstance(via, str):
+                      if via in vulns:
+                          nested, nested_unknown = atomic_advisories(via, seen)
+                          advisories.extend(nested)
+                          unknown.extend(nested_unknown)
+                      else:
+                          unknown.append(via)
+              return advisories, unknown
+
+          high_names = [
+              name for name, vuln in vulns.items()
+              if severity_rank.get(str(vuln.get("severity", "")).lower(), 0) >= 3
+          ]
+
+          unexpected = []
+          for name in high_names:
+              advisories, unknown = atomic_advisories(name)
+              urls = {str(item.get("url") or "").strip() for item in advisories if item.get("url")}
+              if unknown or not urls or not urls.issubset(allowed_urls):
+                  unexpected.append({"name": name, "urls": sorted(urls), "unknown": unknown})
+
+          if unexpected:
+              raise SystemExit(f"Unexpected high/critical agent advisories: {unexpected}")
+
+          print(
+              "Known upstream exception accepted: whatsapp-web.js/Puppeteer extract-zip chain "
+              "(GHSA-jmr9-qjv8-65gv). No other high/critical advisory is allowed."
+          )
       - name: Commit hardened repository
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- "whatsapp riverlub brain" package.json package-lock.json vendor/whatsapp-agent/package.json vendor/whatsapp-agent/package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock .github/workflows/release-windows.yml
+          git add -A -- "whatsapp riverlub brain" package.json package-lock.json vendor/whatsapp-agent/package.json vendor/whatsapp-agent/package-lock.json vendor/whatsapp-agent/src/index.js src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock .github/workflows/release-windows.yml
           git diff --cached --check
           git commit -m "chore: harden Connect release and remove legacy code"
           git push origin HEAD:chore/harden-ci-clean-legacy
