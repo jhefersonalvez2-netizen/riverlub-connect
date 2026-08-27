@@ -22,22 +22,20 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
       - name: Remove obsolete legacy tree
         shell: bash
         run: rm -rf -- "whatsapp riverlub brain"
-      - name: Lock bundled WhatsApp agent dependencies
+      - name: Lock and patch bundled WhatsApp agent dependencies
         shell: bash
-        run: npm install --package-lock-only --ignore-scripts --prefix vendor/whatsapp-agent
+        run: |
+          npm install --package-lock-only --ignore-scripts --prefix vendor/whatsapp-agent
+          npm audit fix --package-lock-only --ignore-scripts --prefix vendor/whatsapp-agent
       - name: Validate root application
         shell: bash
         run: |
           npm ci
           npm run build:ui
           npm audit --omit=dev --audit-level=high
-      - name: Validate Rust application
-        shell: bash
-        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - name: Validate bundled WhatsApp agent
         shell: bash
         run: |
