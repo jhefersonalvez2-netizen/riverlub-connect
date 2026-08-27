@@ -22,14 +22,66 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Remove obsolete legacy tree
-        shell: bash
-        run: rm -rf -- "whatsapp riverlub brain"
-      - name: Lock and patch bundled WhatsApp agent dependencies
+      - name: Prepare guarded repository changes
+        shell: python
+        run: |
+          import json
+          import shutil
+          from pathlib import Path
+
+          legacy = Path("whatsapp riverlub brain")
+          if legacy.exists():
+              shutil.rmtree(legacy)
+
+          root_pkg = Path("package.json")
+          root = json.loads(root_pkg.read_text(encoding="utf-8"))
+          if root.get("version") != "0.3.0":
+              raise SystemExit(f"unexpected Connect version: {root.get('version')}")
+          root["version"] = "0.3.1"
+          root_pkg.write_text(json.dumps(root, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+          agent_pkg = Path("vendor/whatsapp-agent/package.json")
+          agent = json.loads(agent_pkg.read_text(encoding="utf-8"))
+          if agent.get("version") != "1.3.1":
+              raise SystemExit(f"unexpected agent version: {agent.get('version')}")
+          if agent.get("dependencies", {}).get("whatsapp-web.js") != "^1.34.6":
+              raise SystemExit("unexpected whatsapp-web.js dependency")
+          agent["version"] = "1.3.2"
+          agent["dependencies"]["whatsapp-web.js"] = "1.34.2"
+          agent_pkg.write_text(json.dumps(agent, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+          tauri_path = Path("src-tauri/tauri.conf.json")
+          tauri = json.loads(tauri_path.read_text(encoding="utf-8"))
+          if tauri.get("version") != "0.3.0":
+              raise SystemExit(f"unexpected Tauri version: {tauri.get('version')}")
+          tauri["version"] = "0.3.1"
+          tauri_path.write_text(json.dumps(tauri, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+          cargo_path = Path("src-tauri/Cargo.toml")
+          cargo = cargo_path.read_text(encoding="utf-8")
+          old_cargo = 'version = "0.3.0"'
+          if cargo.count(old_cargo) != 1:
+              raise SystemExit("unexpected Cargo version declaration")
+          cargo_path.write_text(cargo.replace(old_cargo, 'version = "0.3.1"', 1), encoding="utf-8")
+
+          release_path = Path(".github/workflows/release-windows.yml")
+          release = release_path.read_text(encoding="utf-8")
+          replacements = {
+              'run: npm install --omit=dev --prefix vendor/whatsapp-agent': 'run: npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent',
+              'if ($agentVersion -ne "1.3.1")': 'if ($agentVersion -ne "1.3.2")',
+              'agente WhatsApp 1.3.1 integrado': 'agente WhatsApp 1.3.2 integrado',
+          }
+          for old, new in replacements.items():
+              if release.count(old) != 1:
+                  raise SystemExit(f"release workflow expected one occurrence of: {old}")
+              release = release.replace(old, new, 1)
+          release_path.write_text(release, encoding="utf-8")
+
+      - name: Refresh lockfiles
         shell: bash
         run: |
+          npm install --package-lock-only --ignore-scripts
           npm install --package-lock-only --ignore-scripts --prefix vendor/whatsapp-agent
-          npm audit fix --package-lock-only --ignore-scripts --prefix vendor/whatsapp-agent
       - name: Validate root application
         shell: bash
         run: |
@@ -42,23 +94,12 @@ jobs:
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node --check vendor/whatsapp-agent/src/index.js
           npm audit --omit=dev --audit-level=high --prefix vendor/whatsapp-agent
-      - name: Make release installation reproducible
-        shell: python
-        run: |
-          from pathlib import Path
-          path = Path('.github/workflows/release-windows.yml')
-          text = path.read_text(encoding='utf-8')
-          old = 'run: npm install --omit=dev --prefix vendor/whatsapp-agent'
-          new = 'run: npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one release install command, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
       - name: Commit hardened repository
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- "whatsapp riverlub brain" vendor/whatsapp-agent/package-lock.json .github/workflows/release-windows.yml
+          git add -A -- "whatsapp riverlub brain" package.json package-lock.json vendor/whatsapp-agent/package.json vendor/whatsapp-agent/package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock .github/workflows/release-windows.yml
           git diff --cached --check
-          git commit -m "chore: remove legacy Connect code and lock agent dependencies"
+          git commit -m "chore: harden Connect release and remove legacy code"
           git push origin HEAD:chore/harden-ci-clean-legacy
