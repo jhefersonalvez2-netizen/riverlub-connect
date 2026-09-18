@@ -7,7 +7,7 @@ const qrcodeTerminal = require("qrcode-terminal");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
-const AGENT_VERSION = "1.3.3";
+const AGENT_VERSION = "1.3.4";
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);
@@ -672,6 +672,57 @@ async function forcarResolucaoLid(chatId) {
   return Array.isArray(resultado) ? resultado[0] || null : null;
 }
 
+function isErroApiWhatsAppNaoInjetada(error) {
+  const texto = String(error?.message || error || "");
+  return /Cannot read properties of undefined \(reading ['"]getChat['"]\)/i.test(texto)
+    || /window\.WWebJS/i.test(texto)
+    || /WWebJS.*getChat/i.test(texto);
+}
+
+async function apiEnvioWhatsAppDisponivel() {
+  if (!client?.pupPage || client.pupPage.isClosed?.()) {
+    return false;
+  }
+
+  try {
+    return await client.pupPage.evaluate(() => Boolean(
+      window.WWebJS &&
+      typeof window.WWebJS.getChat === "function" &&
+      typeof window.WWebJS.sendMessage === "function"
+    ));
+  } catch {
+    return false;
+  }
+}
+
+async function aguardarApiEnvioWhatsApp(timeoutMs = 60000) {
+  const inicio = Date.now();
+
+  while (Date.now() - inicio < timeoutMs) {
+    if (conectado && await apiEnvioWhatsAppDisponivel()) {
+      return true;
+    }
+
+    await aguardar(500);
+  }
+
+  return false;
+}
+
+async function recuperarApiEnvioWhatsApp() {
+  logWarn("API interna do WhatsApp Web indisponivel; reinicializando sessao preservada");
+  conectado = false;
+
+  await iniciarCliente({ reiniciar: true });
+
+  const pronta = await aguardarApiEnvioWhatsApp();
+  if (!pronta) {
+    throw new Error("WhatsApp Web reiniciou, mas a API interna de envio nao ficou pronta");
+  }
+
+  logInfo("API interna do WhatsApp Web recuperada");
+}
+
 async function resolverDestinoWhatsApp(telefoneOriginal) {
   const candidatos = getTelefonesCandidatos(telefoneOriginal);
 
@@ -721,13 +772,33 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
 
 async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
   let ultimoErro = null;
+  let destinoAtual = destino;
+  let recuperacaoTentada = false;
 
-  for (const chatId of destino.ids) {
+  if (!await apiEnvioWhatsAppDisponivel()) {
+    await recuperarApiEnvioWhatsApp();
+    destinoAtual = await resolverDestinoWhatsApp(destino.telefone);
+    recuperacaoTentada = true;
+  }
+
+  for (let indice = 0; indice < destinoAtual.ids.length; indice += 1) {
+    let chatId = destinoAtual.ids[indice];
+
     for (let tentativa = 1; tentativa <= 2; tentativa += 1) {
       try {
         return await client.sendMessage(chatId, conteudo, opcoes);
       } catch (error) {
         ultimoErro = error;
+
+        if (isErroApiWhatsAppNaoInjetada(error) && !recuperacaoTentada) {
+          recuperacaoTentada = true;
+          await recuperarApiEnvioWhatsApp();
+          destinoAtual = await resolverDestinoWhatsApp(destino.telefone);
+          chatId = destinoAtual.ids[0];
+          indice = 0;
+          tentativa = 0;
+          continue;
+        }
 
         if (!isErroLid(error)) {
           throw error;
