@@ -7,7 +7,7 @@ const qrcodeTerminal = require("qrcode-terminal");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
-const AGENT_VERSION = "1.3.2";
+const AGENT_VERSION = "1.3.3";
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);
@@ -15,6 +15,8 @@ const PING_MS = Number(process.env.RIVERLUB_AGENT_PING_MS || 20000);
 const QR_EXPIRES_MS = Number(process.env.RIVERLUB_AGENT_QR_EXPIRES_MS || 75000);
 const RECONNECT_DELAY_MS = Number(process.env.RIVERLUB_AGENT_RECONNECT_DELAY_MS || 3500);
 const MAX_RECONNECT_ATTEMPTS = Number(process.env.RIVERLUB_AGENT_MAX_RECONNECT_ATTEMPTS || 5);
+const API_RETRY_ATTEMPTS = 3;
+const API_RETRY_BASE_MS = 600;
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://app.riverlub.com.br",
   "https://riverlub-frontend-vercel.vercel.app",
@@ -50,6 +52,7 @@ let localServer = null;
 let encerrando = false;
 let reconnectAttempts = 0;
 let desconexaoSolicitada = false;
+let ultimoErroApi = null;
 const estadoLocal = {
   iniciadoEm: new Date().toISOString(),
   atualizadoEm: new Date().toISOString(),
@@ -492,31 +495,81 @@ function getNomeConta() {
   return normalizarTexto(client?.info?.pushname) || getTelefoneConectado();
 }
 
+function apiPodeRetentar(caminho, status) {
+  if (caminho !== "/whatsapp/agente/ping") return false;
+  if (!status) return true;
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function registrarApiRecuperada() {
+  const erroAnterior = ultimoErroApi;
+  ultimoErroApi = null;
+
+  if (erroAnterior && estadoLocal.ultimoErro === erroAnterior) {
+    atualizarEstado({ ultimoErro: null });
+    escreverLog("info", "API RiverLub recuperada; alerta transitorio limpo");
+  }
+}
+
 async function chamarApi(caminho, body = {}) {
   if (!getConfigurado()) {
     throw new Error("Agente local ainda nao foi ativado pelo RiverLub");
   }
 
-  const response = await fetch(`${apiUrl}${caminho}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${agentToken}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const maxTentativas = caminho === "/whatsapp/agente/ping" ? API_RETRY_ATTEMPTS : 1;
+  let ultimoErro = null;
 
-  const data = await response.json().catch(() => null);
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa += 1) {
+    try {
+      const response = await fetch(`${apiUrl}${caminho}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${agentToken}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-  if (!response.ok) {
-    const mensagemErro = data?.erro || `Erro ${response.status} na API RiverLub`;
-    if (response.status === 401 && /token.*invalido|token.*revogado/i.test(mensagemErro)) {
-      limparTokenLocal("Token local expirado; aguardando nova ativacao pela tela do RiverLub");
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const mensagemErro = data?.erro || `Erro ${response.status} na API RiverLub`;
+        if (response.status === 401 && /token.*invalido|token.*revogado/i.test(mensagemErro)) {
+          limparTokenLocal("Token local expirado; aguardando nova ativacao pela tela do RiverLub");
+        }
+
+        const error = new Error(mensagemErro);
+        error.status = response.status;
+        throw error;
+      }
+
+      registrarApiRecuperada();
+      return data || {};
+    } catch (error) {
+      ultimoErro = error;
+      const mensagemErro = limitarTexto(
+        error?.message || error || "Falha de comunicacao com a API RiverLub",
+        800
+      );
+      ultimoErroApi = mensagemErro;
+
+      const status = Number(error?.status || 0);
+      const podeRetentar = apiPodeRetentar(caminho, status);
+
+      if (!podeRetentar || tentativa >= maxTentativas) {
+        throw error;
+      }
+
+      escreverLog(
+        "warn",
+        `Falha transitoria na API RiverLub; nova tentativa ${tentativa + 1}/${maxTentativas}`,
+        mensagemErro
+      );
+      await aguardar(API_RETRY_BASE_MS * tentativa);
     }
-    throw new Error(mensagemErro);
   }
 
-  return data;
+  throw ultimoErro || new Error("Falha de comunicacao com a API RiverLub");
 }
 
 async function ping(status, extra = {}) {
