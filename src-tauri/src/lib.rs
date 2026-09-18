@@ -1097,6 +1097,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AgentProcessState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            focus_main_window(app);
             handle_deep_link_args(app, args);
             let state = app.state::<AgentProcessState>();
             let _ = spawn_managed_agent(&state, app);
