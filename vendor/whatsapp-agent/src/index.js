@@ -8,7 +8,7 @@ const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { LoadUtils } = require("whatsapp-web.js/src/util/Injected/Utils");
 
-const AGENT_VERSION = "1.3.5";
+const AGENT_VERSION = "1.3.6";
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);
@@ -722,6 +722,37 @@ async function aguardarApiEnvioWhatsApp(timeoutMs = 10000) {
   return false;
 }
 
+async function runtimeWhatsAppDisponivel() {
+  const page = client?.pupPage;
+
+  if (!page || page.isClosed?.()) {
+    return false;
+  }
+
+  try {
+    return await page.evaluate(() => Boolean(
+      typeof window.require === "function" &&
+      window.Debug?.VERSION
+    ));
+  } catch {
+    return false;
+  }
+}
+
+async function aguardarRuntimeWhatsApp(timeoutMs = 10000) {
+  const inicio = Date.now();
+
+  while (Date.now() - inicio < timeoutMs) {
+    if (await runtimeWhatsAppDisponivel()) {
+      return true;
+    }
+
+    await aguardar(400);
+  }
+
+  return false;
+}
+
 async function reinjetarApiEnvioWhatsApp() {
   const page = client?.pupPage;
 
@@ -730,8 +761,9 @@ async function reinjetarApiEnvioWhatsApp() {
   }
 
   try {
-    const storeDisponivel = await page.evaluate(() => Boolean(window.Store));
-    if (!storeDisponivel) {
+    const runtimePronto = await aguardarRuntimeWhatsApp(10000);
+    if (!runtimePronto) {
+      logWarn("Runtime interno do WhatsApp Web ainda nao esta pronto para reinjecao");
       return false;
     }
 
@@ -741,7 +773,12 @@ async function reinjetarApiEnvioWhatsApp() {
       "Timeout ao reinjetar API interna do WhatsApp Web"
     );
 
-    return await aguardarApiEnvioWhatsApp(10000);
+    const apiPronta = await aguardarApiEnvioWhatsApp(10000);
+    if (!apiPronta) {
+      logWarn("LoadUtils executou, mas WWebJS.getChat/sendMessage nao ficaram disponiveis");
+    }
+
+    return apiPronta;
   } catch (error) {
     logWarn("Falha ao reinjetar API interna do WhatsApp Web", error);
     return false;
