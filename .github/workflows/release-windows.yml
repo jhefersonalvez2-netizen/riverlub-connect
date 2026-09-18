@@ -51,7 +51,7 @@ jobs:
         shell: powershell
         run: |
           $agentVersion = node -p "require('./vendor/whatsapp-agent/package.json').version"
-          if ($agentVersion -ne "1.3.2") {
+          if ($agentVersion -ne "1.3.3") {
             throw "Versao inesperada do agente: $agentVersion"
           }
 
@@ -72,7 +72,11 @@ jobs:
             Copy-Item $installer.FullName $target -Force
           }
 
+          $stableTarget = Join-Path $installer.DirectoryName "RiverLub-Connect-Windows-x64-setup.exe"
+          Copy-Item $target $stableTarget -Force
+
           "version=$version" >> $env:GITHUB_OUTPUT
+          "stable_installer=$stableTarget" >> $env:GITHUB_OUTPUT
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "installer=$target" >> $env:GITHUB_OUTPUT
 
@@ -83,6 +87,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           VERSION: ${{ steps.release.outputs.version }}
           INSTALLER: ${{ steps.release.outputs.installer }}
+          STABLE_INSTALLER: ${{ steps.release.outputs.stable_installer }}
         run: |
           $existing = gh release list `
             --repo $env:GITHUB_REPOSITORY `
@@ -95,10 +100,10 @@ jobs:
               --repo $env:GITHUB_REPOSITORY `
               --target $env:GITHUB_SHA `
               --title "RiverLub Connect $env:TAG" `
-              --notes "RiverLub Connect $env:VERSION com agente WhatsApp 1.3.2 integrado, runtime Windows empacotado e correcoes de sessao LocalAuth."
+              --notes "RiverLub Connect $env:VERSION com agente WhatsApp 1.3.3 integrado, reabertura confiavel da janela e recuperacao de falhas transitorias da API."
           }
 
-          gh release upload $env:TAG $env:INSTALLER --repo $env:GITHUB_REPOSITORY --clobber
+          gh release upload $env:TAG $env:INSTALLER $env:STABLE_INSTALLER --repo $env:GITHUB_REPOSITORY --clobber
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
