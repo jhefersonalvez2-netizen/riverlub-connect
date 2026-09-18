@@ -6,8 +6,9 @@ const { execFile } = require("child_process");
 const qrcodeTerminal = require("qrcode-terminal");
 const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const { LoadUtils } = require("whatsapp-web.js/src/util/Injected/Utils");
 
-const AGENT_VERSION = "1.3.4";
+const AGENT_VERSION = "1.3.5";
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);
@@ -679,6 +680,18 @@ function isErroApiWhatsAppNaoInjetada(error) {
     || /WWebJS.*getChat/i.test(texto);
 }
 
+function executarComTimeout(promise, timeoutMs, mensagem) {
+  let timer = null;
+
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(mensagem)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function apiEnvioWhatsAppDisponivel() {
   if (!client?.pupPage || client.pupPage.isClosed?.()) {
     return false;
@@ -695,32 +708,65 @@ async function apiEnvioWhatsAppDisponivel() {
   }
 }
 
-async function aguardarApiEnvioWhatsApp(timeoutMs = 60000) {
+async function aguardarApiEnvioWhatsApp(timeoutMs = 10000) {
   const inicio = Date.now();
 
   while (Date.now() - inicio < timeoutMs) {
-    if (conectado && await apiEnvioWhatsAppDisponivel()) {
+    if (await apiEnvioWhatsAppDisponivel()) {
       return true;
     }
 
-    await aguardar(500);
+    await aguardar(400);
   }
 
   return false;
 }
 
-async function recuperarApiEnvioWhatsApp() {
-  logWarn("API interna do WhatsApp Web indisponivel; reinicializando sessao preservada");
-  conectado = false;
+async function reinjetarApiEnvioWhatsApp() {
+  const page = client?.pupPage;
 
-  await iniciarCliente({ reiniciar: true });
-
-  const pronta = await aguardarApiEnvioWhatsApp();
-  if (!pronta) {
-    throw new Error("WhatsApp Web reiniciou, mas a API interna de envio nao ficou pronta");
+  if (!page || page.isClosed?.()) {
+    return false;
   }
 
-  logInfo("API interna do WhatsApp Web recuperada");
+  try {
+    const storeDisponivel = await page.evaluate(() => Boolean(window.Store));
+    if (!storeDisponivel) {
+      return false;
+    }
+
+    await executarComTimeout(
+      page.evaluate(LoadUtils),
+      15000,
+      "Timeout ao reinjetar API interna do WhatsApp Web"
+    );
+
+    return await aguardarApiEnvioWhatsApp(10000);
+  } catch (error) {
+    logWarn("Falha ao reinjetar API interna do WhatsApp Web", error);
+    return false;
+  }
+}
+
+async function recuperarApiEnvioWhatsApp() {
+  logWarn("API interna do WhatsApp Web indisponivel; tentando reinjecao segura");
+
+  if (await reinjetarApiEnvioWhatsApp()) {
+    logInfo("API interna do WhatsApp Web reinjetada com sucesso");
+    return;
+  }
+
+  conectado = false;
+  atualizarEstado({
+    whatsappState: "RECONNECTING",
+    ultimoErro: "API interna do WhatsApp Web indisponivel; reconexao agendada",
+  });
+
+  agendarReconexao("API interna do WhatsApp Web indisponivel");
+
+  throw new Error(
+    "API interna do WhatsApp Web indisponivel. O Connect agendou uma reconexao segura; tente o envio novamente quando o status voltar a CONECTADO."
+  );
 }
 
 async function resolverDestinoWhatsApp(telefoneOriginal) {
