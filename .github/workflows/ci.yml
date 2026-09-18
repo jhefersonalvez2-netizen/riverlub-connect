@@ -37,7 +37,13 @@ jobs:
           data = json.loads(Path('/tmp/agent-audit.json').read_text(encoding='utf-8'))
           vulns = data.get('vulnerabilities', {}) or {}
           severity_rank = {'info': 0, 'low': 1, 'moderate': 2, 'high': 3, 'critical': 4}
-          allowed_urls = {'https://github.com/advisories/GHSA-jmr9-qjv8-65gv'}
+          # extract-zip is only present under Puppeteer; this packaged agent uses the
+          # machine's existing Chrome and the release install runs with --ignore-scripts.
+          # GHSA-7pqw-9j4j-h8q3 currently has no patched npm version published.
+          allowed_urls = {
+              'https://github.com/advisories/GHSA-jmr9-qjv8-65gv',
+              'https://github.com/advisories/GHSA-7pqw-9j4j-h8q3',
+          }
 
           def atomic_advisories(name, seen=None):
               seen = set() if seen is None else set(seen)
