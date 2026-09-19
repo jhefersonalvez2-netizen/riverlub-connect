@@ -8,7 +8,7 @@ const QRCode = require("qrcode");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { LoadUtils } = require("whatsapp-web.js/src/util/Injected/Utils");
 
-const AGENT_VERSION = "1.3.6";
+const { version: AGENT_VERSION } = require("../package.json");
 const DEFAULT_API_URL = "https://api.riverlub.com.br/api";
 const LOCAL_PORT = Number(process.env.RIVERLUB_AGENT_LOCAL_PORT || 47851);
 const POLL_MS = Number(process.env.RIVERLUB_AGENT_POLL_MS || 5000);
@@ -43,7 +43,11 @@ let apiUrl = DEFAULT_API_URL;
 let agentToken = "";
 let client = null;
 let conectado = false;
+let transportePronto = false;
+let transporteGeracao = 0;
+let transporteVerificacao = null;
 let processandoJob = false;
+let jobEmEspera = null;
 let inicializandoPromise = null;
 let filaTimer = null;
 let pingTimer = null;
@@ -282,7 +286,8 @@ function cancelarReconexao() {
 }
 
 function agendarReconexao(motivo = "") {
-  if (!getConfigurado() || desconexaoSolicitada || reconnectTimer || inicializandoPromise) {
+  invalidarTransporteWhatsApp();
+  if (!getConfigurado() || desconexaoSolicitada || encerrando || reconnectTimer) {
     return;
   }
 
@@ -296,8 +301,10 @@ function agendarReconexao(motivo = "") {
   }
 
   reconnectAttempts += 1;
-  reconnectTimer = setTimeout(() => {
+  reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
+    if (inicializandoPromise) await inicializandoPromise.catch(() => {});
+    if (transportePronto || desconexaoSolicitada || encerrando) return;
     logInfo(`Tentando reconectar WhatsApp Web (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, motivo || null);
 
     iniciarCliente({ reiniciar: true }).catch(async (error) => {
@@ -680,6 +687,106 @@ function isErroApiWhatsAppNaoInjetada(error) {
     || /(?:window\.)?WWebJS\.(?:getChat|sendMessage) is not a function/i.test(texto);
 }
 
+function isErroCommsNaoIniciado(error) {
+  return /(?:\[comms\]\s*|Comms::)?sendIq called before startComms/i.test(String(error?.message || error || ""));
+}
+
+function isErroTransporteTransitorio(error) {
+  return error?.code === "WHATSAPP_TRANSPORT_NOT_READY" ||
+    isErroCommsNaoIniciado(error) ||
+    /Execution context was destroyed|Cannot find context with specified id|Target closed|Session closed|Connection closed|Navigating frame was detached/i.test(String(error?.message || error || ""));
+}
+
+function erroTransporteNaoPronto(cause) {
+  const error = new Error("WhatsApp conectado, mas o transporte interno ainda nao esta pronto para envio.", { cause });
+  error.code = "WHATSAPP_TRANSPORT_NOT_READY";
+  return error;
+}
+
+function invalidarTransporteWhatsApp() {
+  transportePronto = false;
+  conectado = false;
+  transporteGeracao += 1;
+  transporteVerificacao = null;
+}
+
+async function aguardarTransporteWhatsAppPronto(clienteAtual = client) {
+  if (transporteVerificacao?.client === clienteAtual) return transporteVerificacao.promise;
+
+  const geracao = transporteGeracao;
+  const atual = () => clienteAtual && client === clienteAtual && geracao === transporteGeracao &&
+    !encerrando && !desconexaoSolicitada;
+  const verificacao = { client: clienteAtual, promise: null };
+  verificacao.promise = (async () => {
+    const prazo = Date.now() + 30000;
+    const intervalos = [400, 700, 1000, 1500];
+    let tentativa = 0;
+    let ultimoErro = null;
+
+    while (atual() && Date.now() < prazo) {
+      try {
+        const pronto = await executarComTimeout((async () => {
+          if (!clienteAtual.pupPage || clienteAtual.pupPage.isClosed()) return false;
+          if (await clienteAtual.getState() !== "CONNECTED") return false;
+          const numeroProprio = clienteAtual.info?.wid?.user;
+          if (!numeroProprio || !await apiEnvioWhatsAppDisponivel(clienteAtual)) return false;
+          // This read-only IQ query proves comms is running; the ready event does not.
+          const numeroRegistrado = await clienteAtual.getNumberId(numeroProprio);
+          return Boolean(numeroRegistrado?._serialized);
+        })(), Math.max(1, prazo - Date.now()), "Timeout ao validar transporte do WhatsApp");
+
+        if (!atual()) throw erroTransporteNaoPronto();
+        if (pronto) {
+          const anunciar = !transportePronto;
+          transportePronto = true;
+          atualizarEstado({ whatsappState: "TRANSPORT_READY" });
+          conectado = true;
+          reconnectAttempts = 0;
+          cancelarReconexao();
+          limparQr({
+            authenticated: true,
+            sessionExpired: false,
+            whatsappState: "CONNECTED",
+            desconectadoMotivo: null,
+            ultimoErro: null,
+          });
+          if (anunciar && !jobEmEspera?.envioIndeterminado) {
+            logInfo("WhatsApp conectado; transporte validado por consulta real");
+            void ping("CONECTADO", {
+              telefone_conectado: getTelefoneConectado(),
+              nome_conta: getNomeConta(),
+              ultimo_evento: "Transporte WhatsApp validado; fila liberada",
+              erro_ultimo: null,
+            });
+          }
+          return;
+        }
+      } catch (error) {
+        ultimoErro = error;
+      }
+      if (!atual()) throw erroTransporteNaoPronto(ultimoErro);
+      transportePronto = false;
+      conectado = false;
+      atualizarEstado({ whatsappState: "SYNCING", ultimoErro: null });
+      await aguardar(Math.min(intervalos[Math.min(tentativa++, intervalos.length - 1)], Math.max(0, prazo - Date.now())));
+    }
+
+    const error = erroTransporteNaoPronto(ultimoErro);
+    if (atual()) {
+      atualizarEstado({ whatsappState: "SYNCING", ultimoErro: error.message });
+      logWarn("Transporte ainda indisponivel; fila pausada", error.message);
+      agendarReconexao(error.message);
+    }
+    throw error;
+  })();
+  transporteVerificacao = verificacao;
+  try {
+    return await verificacao.promise;
+  } finally {
+    if (transporteVerificacao === verificacao) transporteVerificacao = null;
+  }
+}
+
 function executarComTimeout(promise, timeoutMs, mensagem) {
   let timer = null;
 
@@ -692,80 +799,34 @@ function executarComTimeout(promise, timeoutMs, mensagem) {
   });
 }
 
-async function apiEnvioWhatsAppDisponivel() {
-  if (!client?.pupPage || client.pupPage.isClosed?.()) {
-    return false;
+async function apiEnvioWhatsAppDisponivel(clienteAtual = client) {
+  if (!clienteAtual?.pupPage || clienteAtual.pupPage.isClosed?.()) {
+    throw erroTransporteNaoPronto();
   }
 
   try {
-    return await client.pupPage.evaluate(() => Boolean(
+    return await clienteAtual.pupPage.evaluate(() => Boolean(
       window.WWebJS &&
       typeof window.WWebJS.getChat === "function" &&
       typeof window.WWebJS.sendMessage === "function"
     ));
-  } catch {
-    return false;
+  } catch (error) {
+    throw erroTransporteNaoPronto(error);
   }
-}
-
-async function aguardarApiEnvioWhatsApp(timeoutMs = 10000) {
-  const inicio = Date.now();
-
-  while (Date.now() - inicio < timeoutMs) {
-    if (await apiEnvioWhatsAppDisponivel()) {
-      return true;
-    }
-
-    await aguardar(400);
-  }
-
-  return false;
-}
-
-async function runtimeWhatsAppDisponivel() {
-  const page = client?.pupPage;
-
-  if (!page || page.isClosed?.()) {
-    return false;
-  }
-
-  try {
-    return await page.evaluate(() => Boolean(
-      typeof window.require === "function" &&
-      window.Debug?.VERSION
-    ));
-  } catch {
-    return false;
-  }
-}
-
-async function aguardarRuntimeWhatsApp(timeoutMs = 10000) {
-  const inicio = Date.now();
-
-  while (Date.now() - inicio < timeoutMs) {
-    if (await runtimeWhatsAppDisponivel()) {
-      return true;
-    }
-
-    await aguardar(400);
-  }
-
-  return false;
 }
 
 async function reinjetarApiEnvioWhatsApp() {
-  const page = client?.pupPage;
+  const clienteAtual = client;
+  const geracao = transporteGeracao;
+  const page = clienteAtual?.pupPage;
 
   if (!page || page.isClosed?.()) {
     return false;
   }
 
   try {
-    const runtimePronto = await aguardarRuntimeWhatsApp(10000);
-    if (!runtimePronto) {
-      logWarn("Runtime interno do WhatsApp Web ainda nao esta pronto para reinjecao");
-      return false;
-    }
+    await page.waitForFunction(() => typeof window.require === "function" && window.Debug?.VERSION, { timeout: 10000 });
+    if (client !== clienteAtual || geracao !== transporteGeracao) return false;
 
     await executarComTimeout(
       page.evaluate(LoadUtils),
@@ -773,12 +834,10 @@ async function reinjetarApiEnvioWhatsApp() {
       "Timeout ao reinjetar API interna do WhatsApp Web"
     );
 
-    const apiPronta = await aguardarApiEnvioWhatsApp(10000);
-    if (!apiPronta) {
-      logWarn("LoadUtils executou, mas WWebJS.getChat/sendMessage nao ficaram disponiveis");
-    }
-
-    return apiPronta;
+    await page.waitForFunction(() => window.WWebJS &&
+      typeof window.WWebJS.getChat === "function" &&
+      typeof window.WWebJS.sendMessage === "function", { timeout: 10000 });
+    return client === clienteAtual && geracao === transporteGeracao;
   } catch (error) {
     logWarn("Falha ao reinjetar API interna do WhatsApp Web", error);
     return false;
@@ -786,14 +845,16 @@ async function reinjetarApiEnvioWhatsApp() {
 }
 
 async function recuperarApiEnvioWhatsApp() {
+  invalidarTransporteWhatsApp();
+  atualizarEstado({ whatsappState: "SYNCING" });
   logWarn("API interna do WhatsApp Web indisponivel; tentando reinjecao segura");
 
   if (await reinjetarApiEnvioWhatsApp()) {
     logInfo("API interna do WhatsApp Web reinjetada com sucesso");
+    await aguardarTransporteWhatsAppPronto();
     return;
   }
 
-  conectado = false;
   atualizarEstado({
     whatsappState: "RECONNECTING",
     ultimoErro: "API interna do WhatsApp Web indisponivel; reconexao agendada",
@@ -801,9 +862,7 @@ async function recuperarApiEnvioWhatsApp() {
 
   agendarReconexao("API interna do WhatsApp Web indisponivel");
 
-  throw new Error(
-    "API interna do WhatsApp Web indisponivel. O Connect agendou uma reconexao segura; tente o envio novamente quando o status voltar a CONECTADO."
-  );
+  throw erroTransporteNaoPronto();
 }
 
 async function resolverDestinoWhatsApp(telefoneOriginal) {
@@ -814,9 +873,14 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
   }
 
   let ultimoErro = null;
+  let recuperacaoTransporteTentada = false;
 
-  for (const telefone of candidatos) {
+  for (let indice = 0; indice < candidatos.length; indice += 1) {
+    const telefone = candidatos[indice];
     try {
+      if (!transportePronto || !client?.pupPage || client.pupPage.isClosed()) {
+        await aguardarTransporteWhatsAppPronto();
+      }
       const numeroRegistrado = await client.getNumberId(telefone);
       const pn = numeroRegistrado?._serialized || null;
 
@@ -830,6 +894,7 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
         const resolucao = await forcarResolucaoLid(pn);
         lid = resolucao?.lid || null;
       } catch (error) {
+        if (isErroTransporteTransitorio(error)) throw error;
         ultimoErro = error;
         logWarn(`Nao consegui carregar LID do telefone ${telefone}`, error);
       }
@@ -841,6 +906,18 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
         ids: valoresUnicos([lid, pn]),
       };
     } catch (error) {
+      if (isErroTransporteTransitorio(error)) {
+        invalidarTransporteWhatsApp();
+        atualizarEstado({ whatsappState: "SYNCING" });
+        if (recuperacaoTransporteTentada || error.code === "WHATSAPP_TRANSPORT_NOT_READY") {
+          agendarReconexao("Transporte indisponivel durante resolucao do destinatario");
+          throw erroTransporteNaoPronto(error);
+        }
+        recuperacaoTransporteTentada = true;
+        await aguardarTransporteWhatsAppPronto();
+        indice -= 1;
+        continue;
+      }
       ultimoErro = error;
       logWarn(`Falha ao validar telefone ${telefone} no WhatsApp`, error);
     }
@@ -856,16 +933,15 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
 async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
   let ultimoErro = null;
   let destinoAtual = destino;
-  let recuperacaoTentada = false;
 
   if (!await apiEnvioWhatsAppDisponivel()) {
     await recuperarApiEnvioWhatsApp();
     destinoAtual = await resolverDestinoWhatsApp(destino.telefone);
-    recuperacaoTentada = true;
   }
+  await aguardarTransporteWhatsAppPronto();
 
   for (let indice = 0; indice < destinoAtual.ids.length; indice += 1) {
-    let chatId = destinoAtual.ids[indice];
+    const chatId = destinoAtual.ids[indice];
 
     for (let tentativa = 1; tentativa <= 2; tentativa += 1) {
       try {
@@ -873,19 +949,28 @@ async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
       } catch (error) {
         ultimoErro = error;
 
+        if (isErroTransporteTransitorio(error) || isErroApiWhatsAppNaoInjetada(error)) {
+          invalidarTransporteWhatsApp();
+          atualizarEstado({ whatsappState: "SYNCING" });
+          const suspensao = erroTransporteNaoPronto(error);
+          // The send was invoked: its outcome must be checked, never replayed automatically.
+          suspensao.envioIndeterminado = true;
+          if (jobEmEspera) jobEmEspera.envioIndeterminado = true;
+          try {
+            if (isErroApiWhatsAppNaoInjetada(error) && !await apiEnvioWhatsAppDisponivel()) {
+              await recuperarApiEnvioWhatsApp();
+            } else {
+              await aguardarTransporteWhatsAppPronto();
+            }
+          } catch {
+            agendarReconexao("Transporte interrompido durante envio");
+          }
+          throw suspensao;
+        }
+
         // A media ID collision is not an injection or LID failure; never retry it.
         if (/Data passed to getter must include an id property/i.test(String(error?.message || error))) {
           throw error;
-        }
-
-        if (isErroApiWhatsAppNaoInjetada(error) && !recuperacaoTentada && !await apiEnvioWhatsAppDisponivel()) {
-          recuperacaoTentada = true;
-          await recuperarApiEnvioWhatsApp();
-          destinoAtual = await resolverDestinoWhatsApp(destino.telefone);
-          chatId = destinoAtual.ids[0];
-          indice = 0;
-          tentativa = 0;
-          continue;
         }
 
         if (!isErroLid(error)) {
@@ -1005,12 +1090,14 @@ async function enviarDocumentoPdf(destino, job, documento) {
       caption: montarCaptionDocumento(job, documento),
     });
   } catch (error) {
+    if (isErroTransporteTransitorio(error)) throw error;
     throw new Error(`PDF nao anexado: ${error.message}`);
   }
 }
 
-async function enviarJob(job) {
+async function enviarJob(job, progresso) {
   if (job.tipo === "DESCONECTAR") {
+    invalidarTransporteWhatsApp();
     desconexaoSolicitada = true;
     cancelarReconexao();
     limparQr({
@@ -1025,7 +1112,6 @@ async function enviarJob(job) {
     await client?.logout().catch(() => {});
     await client?.destroy().catch(() => {});
     client = null;
-    conectado = false;
     return {
       status: "ENVIADO",
       provider_message_id: `local-disconnect-${Date.now()}`,
@@ -1042,12 +1128,13 @@ async function enviarJob(job) {
 
   const destino = await resolverDestinoWhatsApp(telefone);
 
-  if (mensagem) {
+  if (mensagem && !progresso.mensagemEnviada) {
     await enviarParaDestino(destino, mensagem);
+    progresso.mensagemEnviada = true;
   }
 
-  for (const documento of documentos) {
-    await enviarDocumentoPdf(destino, job, documento);
+  for (; progresso.documentosEnviados < documentos.length; progresso.documentosEnviados += 1) {
+    await enviarDocumentoPdf(destino, job, documentos[progresso.documentosEnviados]);
   }
 
   return {
@@ -1058,38 +1145,54 @@ async function enviarJob(job) {
 }
 
 async function processarFila() {
-  if (!getConfigurado() || !conectado || processandoJob) return;
+  if (!getConfigurado() || !conectado || !transportePronto || processandoJob || jobEmEspera?.envioIndeterminado) return;
 
   processandoJob = true;
 
   try {
-    const data = await chamarApi("/whatsapp/agente/jobs/proximo", {});
-    const job = data?.job;
-
-    if (!job) return;
-
-    logInfo(`Processando job #${job.id} (${job.tipo})`);
-
-    try {
-      const resultado = await enviarJob(job);
-
-      await chamarApi(`/whatsapp/agente/jobs/${job.id}/concluir`, {
-        status: "ENVIADO",
-        provider_message_id: resultado.provider_message_id,
-        erro_ultimo: resultado.aviso_documento || null,
-      });
-
-      logInfo(`Job #${job.id} enviado`);
-    } catch (error) {
-      await chamarApi(`/whatsapp/agente/jobs/${job.id}/concluir`, {
-        status: "FALHA",
-        erro_ultimo: error.message,
-      });
-
-      logError(`Falha no job #${job.id}`, error);
+    // Validate before claiming work, including after a previously connected transport drops.
+    await aguardarTransporteWhatsAppPronto();
+    if (!jobEmEspera) {
+      const data = await chamarApi("/whatsapp/agente/jobs/proximo", {});
+      if (!data?.job) return;
+      jobEmEspera = { job: data.job, mensagemEnviada: false, documentosEnviados: 0 };
+      logInfo(`Processando job #${data.job.id} (${data.job.tipo})`);
     }
+    const progresso = jobEmEspera;
+    const { job } = progresso;
+
+    if (!progresso.conclusao) {
+      try {
+        const resultado = await enviarJob(job, progresso);
+        progresso.conclusao = {
+          status: "ENVIADO",
+          provider_message_id: resultado.provider_message_id,
+          erro_ultimo: resultado.aviso_documento || null,
+        };
+      } catch (error) {
+        if (isErroTransporteTransitorio(error)) {
+          progresso.envioIndeterminado = Boolean(error.envioIndeterminado);
+          if (!progresso.envioIndeterminado && transportePronto) {
+            invalidarTransporteWhatsApp();
+            atualizarEstado({ whatsappState: "SYNCING" });
+            await aguardarTransporteWhatsAppPronto().catch(() => {});
+          }
+          const mensagem = progresso.envioIndeterminado
+            ? `Job #${job.id} com envio sem confirmacao; fila pausada para evitar duplicidade`
+            : `Job #${job.id} aguardando transporte; etapas enviadas preservadas`;
+          logWarn(mensagem, error.message);
+          atualizarEstado({ ultimoErro: mensagem });
+          return;
+        }
+        progresso.conclusao = { status: "FALHA", erro_ultimo: error.message };
+        logError(`Falha no job #${job.id}`, error);
+      }
+    }
+    await chamarApi(`/whatsapp/agente/jobs/${job.id}/concluir`, progresso.conclusao);
+    if (progresso.conclusao.status === "ENVIADO") logInfo(`Job #${job.id} enviado`);
+    jobEmEspera = null;
   } catch (error) {
-    logError("Falha ao processar fila", error);
+    if (!isErroTransporteTransitorio(error)) logError("Falha ao processar fila", error);
   } finally {
     processandoJob = false;
   }
@@ -1098,7 +1201,7 @@ async function processarFila() {
 function configurarTimers() {
   if (!pingTimer) {
     pingTimer = setInterval(() => {
-      if (conectado) {
+      if (conectado && transportePronto && !jobEmEspera?.envioIndeterminado) {
         ping("CONECTADO", {
           telefone_conectado: getTelefoneConectado(),
           nome_conta: getNomeConta(),
@@ -1115,7 +1218,7 @@ function configurarTimers() {
 }
 
 async function encerrarClienteAtual() {
-  conectado = false;
+  invalidarTransporteWhatsApp();
 
   if (!client) return;
 
@@ -1129,6 +1232,7 @@ async function encerrarClienteAtual() {
 async function encerrarAgente(motivo = "Encerrando agente local", codigo = 0) {
   if (encerrando) return;
   encerrando = true;
+  invalidarTransporteWhatsApp();
   desconexaoSolicitada = true;
   cancelarReconexao();
 
@@ -1231,8 +1335,22 @@ function criarCliente() {
     puppeteer: getPuppeteerOptions(),
   });
 
+  let paginaMonitorada = null;
+  function monitorarPagina() {
+    const page = novoClient.pupPage;
+    if (!page || paginaMonitorada === page) return;
+    paginaMonitorada = page;
+    page.once("close", () => {
+      if (client !== novoClient) return;
+      invalidarTransporteWhatsApp();
+      atualizarEstado({ whatsappState: "RECONNECTING" });
+      agendarReconexao("Pagina do WhatsApp fechada");
+    });
+  }
+
   novoClient.on("qr", async (qr) => {
-    conectado = false;
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
     desconexaoSolicitada = false;
     logInfo("QR recebido para pareamento");
     qrcodeTerminal.generate(qr, { small: true });
@@ -1252,6 +1370,9 @@ function criarCliente() {
   });
 
   novoClient.on("authenticated", async () => {
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
+    monitorarPagina();
     limparQr({
       authenticated: true,
       sessionExpired: false,
@@ -1267,27 +1388,23 @@ function criarCliente() {
   });
 
   novoClient.on("ready", async () => {
-    conectado = true;
-    reconnectAttempts = 0;
-    cancelarReconexao();
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
+    monitorarPagina();
     limparQr({
       authenticated: true,
       sessionExpired: false,
-      whatsappState: "CONNECTED",
+      whatsappState: "SYNCING",
       desconectadoMotivo: null,
       ultimoErro: null,
     });
-    logInfo("WhatsApp conectado e pronto");
-    await ping("CONECTADO", {
-      telefone_conectado: getTelefoneConectado(),
-      nome_conta: getNomeConta(),
-      ultimo_evento: "WhatsApp da oficina conectado no agente local",
-      erro_ultimo: null,
-    });
+    logInfo("WhatsApp carregado; validando transporte antes de liberar fila");
+    await aguardarTransporteWhatsAppPronto(novoClient).catch(() => {});
   });
 
   novoClient.on("auth_failure", async (mensagem) => {
-    conectado = false;
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
     limparQr({
       authenticated: false,
       sessionExpired: true,
@@ -1303,7 +1420,8 @@ function criarCliente() {
   });
 
   novoClient.on("disconnected", async (motivo) => {
-    conectado = false;
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
     limparQr({
       authenticated: false,
       sessionExpired: true,
@@ -1322,20 +1440,34 @@ function criarCliente() {
   });
 
   novoClient.on("loading_screen", (percent, mensagem) => {
-    if (!estadoLocal.waitingQr && !conectado) {
+    if (client !== novoClient) return;
+    invalidarTransporteWhatsApp();
+    if (!estadoLocal.waitingQr) {
       atualizarEstado({
-        whatsappState: "LOADING",
+        whatsappState: estadoLocal.authenticated ? "SYNCING" : "LOADING",
         sessionExpired: false,
       });
     }
     logInfo(`Carregando WhatsApp Web ${percent || 0}%`, mensagem || null);
+    if (estadoLocal.authenticated && !estadoLocal.sessionExpired) {
+      void aguardarTransporteWhatsAppPronto(novoClient).catch(() => {});
+    }
   });
 
   novoClient.on("change_state", (state) => {
-    atualizarEstado({
-      whatsappState: state || estadoLocal.whatsappState,
-    });
+    if (client !== novoClient) return;
+    if (state !== "CONNECTED") {
+      invalidarTransporteWhatsApp();
+      const sessaoInvalida = state === "UNPAIRED" || state === "UNPAIRED_IDLE";
+      atualizarEstado({
+        whatsappState: sessaoInvalida ? state : "SYNCING",
+        ...(sessaoInvalida ? { authenticated: false, sessionExpired: true } : {}),
+      });
+    }
     logInfo(`Estado interno alterado para ${state}`);
+    if (!transportePronto && estadoLocal.authenticated && !estadoLocal.sessionExpired) {
+      void aguardarTransporteWhatsAppPronto(novoClient).catch(() => {});
+    }
   });
 
   return novoClient;
@@ -1350,6 +1482,7 @@ async function iniciarCliente({ reiniciar = false } = {}) {
   if (inicializandoPromise) return inicializandoPromise;
 
   inicializandoPromise = (async () => {
+    invalidarTransporteWhatsApp();
     desconexaoSolicitada = false;
     atualizarEstado({
       whatsappState: reiniciar ? "RECONNECTING" : "STARTING",
@@ -1537,10 +1670,16 @@ async function ativarPeloBrowser(payload) {
 
 function getStatusLocal({ incluirQr = false } = {}) {
   expirarQrSeNecessario();
+  if (transportePronto && (!client?.pupPage || client.pupPage.isClosed())) {
+    invalidarTransporteWhatsApp();
+    atualizarEstado({ whatsappState: "RECONNECTING" });
+    agendarReconexao("Pagina do WhatsApp indisponivel");
+  }
   const telefoneConectado = getTelefoneConectado();
   const nomeConta = getNomeConta();
   const qrAvailable = Boolean(estadoLocal.qrDataUrl && !estadoLocal.qrExpiradoEm && !conectado);
   const qrExpiresAt = estadoLocal.qrExpiraEm || null;
+  const prontoParaEnvio = conectado && transportePronto && !jobEmEspera?.envioIndeterminado;
 
   return {
     sucesso: true,
@@ -1548,10 +1687,11 @@ function getStatusLocal({ incluirQr = false } = {}) {
     configurado: getConfigurado(),
     managed_by_connect: MANAGED_BY_CONNECT,
     process_origin: MANAGED_BY_CONNECT ? "CONNECT" : "EXTERNAL",
-    conectado,
-    connected: conectado,
+    conectado: prontoParaEnvio,
+    connected: prontoParaEnvio,
     authenticated: estadoLocal.authenticated,
-    pronto_para_envio: conectado,
+    transporte_pronto: transportePronto,
+    pronto_para_envio: prontoParaEnvio,
     telefone_conectado: telefoneConectado,
     nome_conta: nomeConta,
     waiting_qr: estadoLocal.waitingQr,
@@ -1656,6 +1796,7 @@ function iniciarServidorLocal() {
     }
 
     if (req.method === "POST" && req.url === "/desconectar") {
+      invalidarTransporteWhatsApp();
       desconexaoSolicitada = true;
       cancelarReconexao();
       limparQr({
