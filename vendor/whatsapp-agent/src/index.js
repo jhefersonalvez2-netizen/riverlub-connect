@@ -2,6 +2,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { execFile } = require("child_process");
 const qrcodeTerminal = require("qrcode-terminal");
 const QRCode = require("qrcode");
@@ -48,6 +49,7 @@ let transporteGeracao = 0;
 let transporteVerificacao = null;
 let processandoJob = false;
 let jobEmEspera = null;
+let renovandoLease = false;
 let inicializandoPromise = null;
 let filaTimer = null;
 let pingTimer = null;
@@ -536,6 +538,7 @@ async function chamarApi(caminho, body = {}) {
           Authorization: `Bearer ${agentToken}`,
         },
         body: JSON.stringify(body),
+        signal: caminho.startsWith("/whatsapp/agente/jobs/") ? AbortSignal.timeout(30000) : undefined,
       });
 
       const data = await response.json().catch(() => null);
@@ -930,7 +933,7 @@ async function resolverDestinoWhatsApp(telefoneOriginal) {
   throw new Error("Telefone nao encontrado no WhatsApp ou ainda nao disponivel para envio");
 }
 
-async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
+async function enviarParaDestino(destino, conteudo, opcoes = undefined, antesDeEnviar = null) {
   let ultimoErro = null;
   let destinoAtual = destino;
 
@@ -939,6 +942,7 @@ async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
     destinoAtual = await resolverDestinoWhatsApp(destino.telefone);
   }
   await aguardarTransporteWhatsAppPronto();
+  if (antesDeEnviar) await antesDeEnviar();
 
   for (let indice = 0; indice < destinoAtual.ids.length; indice += 1) {
     const chatId = destinoAtual.ids[indice];
@@ -955,7 +959,12 @@ async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
           const suspensao = erroTransporteNaoPronto(error);
           // The send was invoked: its outcome must be checked, never replayed automatically.
           suspensao.envioIndeterminado = true;
-          if (jobEmEspera) jobEmEspera.envioIndeterminado = true;
+          if (jobEmEspera) {
+            jobEmEspera.envioIndeterminado = true;
+            await salvarCheckpointJob(jobEmEspera, { envio_indeterminado: true }).catch((erroCheckpoint) => {
+              logWarn("Envio indeterminado; checkpoint pendente, fila pausada para reconciliacao", erroCheckpoint);
+            });
+          }
           try {
             if (isErroApiWhatsAppNaoInjetada(error) && !await apiEnvioWhatsAppDisponivel()) {
               await recuperarApiEnvioWhatsApp();
@@ -1082,16 +1091,69 @@ function montarDocumentosJob(job) {
   return documentos;
 }
 
-async function enviarDocumentoPdf(destino, job, documento) {
+async function enviarDocumentoPdf(destino, job, documento, antesDeEnviar) {
   try {
     const media = await gerarPdfDoLink(documento.url_pdf, documento.filename);
     await enviarParaDestino(destino, media, {
       sendMediaAsDocument: true,
       caption: montarCaptionDocumento(job, documento),
-    });
+    }, antesDeEnviar);
   } catch (error) {
-    if (isErroTransporteTransitorio(error)) throw error;
+    if (isErroTransporteTransitorio(error) || error.code === "WHATSAPP_CHECKPOINT_PENDING") throw error;
     throw new Error(`PDF nao anexado: ${error.message}`);
+  }
+}
+
+function aplicarProgressoJob(progresso, job) {
+  progresso.job = job;
+  progresso.mensagemEnviada = Boolean(job.mensagem_enviada_em);
+  progresso.documentosEnviados = job.documentos_enviados;
+  progresso.envioIndeterminado = progresso.envioIndeterminado || job.envio_indeterminado;
+  progresso.envioId = job.envio_em_curso || null;
+}
+
+async function salvarCheckpointJob(progresso, campos) {
+  progresso.checkpointPendente = campos;
+  try {
+    const data = await chamarApi(`/whatsapp/agente/jobs/${progresso.job.id}/progresso`, campos);
+    if (!data.job || data.job.id !== progresso.job.id || !Number.isSafeInteger(data.job.documentos_enviados)) {
+      throw new Error("API nao confirmou o progresso duravel do job");
+    }
+    aplicarProgressoJob(progresso, data.job);
+    progresso.checkpointPendente = null;
+  } catch (cause) {
+    const error = new Error(`Checkpoint do job #${progresso.job.id} pendente: ${cause.message}`);
+    error.code = "WHATSAPP_CHECKPOINT_PENDING";
+    if ([400, 409].includes(cause.status)) {
+      progresso.envioIndeterminado = true;
+      progresso.checkpointPendente = { envio_indeterminado: true };
+      error.message += "; requer reconciliacao antes de continuar";
+    }
+    throw error;
+  }
+}
+
+async function registrarInicioEnvio(progresso, etapa) {
+  if (progresso.envioIndeterminado) throw new Error("Envio requer reconciliacao");
+  // Reuse the same intent after an API timeout; never repeat an unconfirmed send.
+  const envioId = progresso.envioId || randomUUID();
+  await salvarCheckpointJob(progresso, { iniciar_envio: true, envio_id: envioId, etapa });
+}
+
+async function renovarLeaseJob() {
+  if (!getConfigurado() || !jobEmEspera || renovandoLease) return;
+  renovandoLease = true;
+  const progresso = jobEmEspera;
+  try {
+    const data = await chamarApi(`/whatsapp/agente/jobs/${progresso.job.id}/progresso`, {});
+    if (data.job?.envio_indeterminado && jobEmEspera === progresso) {
+      progresso.envioIndeterminado = true;
+      atualizarEstado({ ultimoErro: `Job #${progresso.job.id} requer reconciliacao; fila pausada` });
+    }
+  } catch (error) {
+    if (jobEmEspera === progresso) logWarn(`Nao foi possivel renovar reserva do job #${progresso.job.id}`, error);
+  } finally {
+    renovandoLease = false;
   }
 }
 
@@ -1126,15 +1188,18 @@ async function enviarJob(job, progresso) {
     throw new Error("Job sem telefone, mensagem ou documento");
   }
 
-  const destino = await resolverDestinoWhatsApp(telefone);
+  const temEtapasPendentes = (mensagem && !progresso.mensagemEnviada) || progresso.documentosEnviados < documentos.length;
+  const destino = temEtapasPendentes ? await resolverDestinoWhatsApp(telefone) : null;
 
   if (mensagem && !progresso.mensagemEnviada) {
-    await enviarParaDestino(destino, mensagem);
-    progresso.mensagemEnviada = true;
+    await enviarParaDestino(destino, mensagem, undefined, () => registrarInicioEnvio(progresso, "mensagem"));
+    await salvarCheckpointJob(progresso, { mensagem_enviada: true, envio_id: progresso.envioId });
   }
 
-  for (; progresso.documentosEnviados < documentos.length; progresso.documentosEnviados += 1) {
-    await enviarDocumentoPdf(destino, job, documentos[progresso.documentosEnviados]);
+  while (progresso.documentosEnviados < documentos.length) {
+    const indice = progresso.documentosEnviados;
+    await enviarDocumentoPdf(destino, job, documentos[indice], () => registrarInicioEnvio(progresso, `documento:${indice}`));
+    await salvarCheckpointJob(progresso, { documentos_enviados: indice + 1, envio_id: progresso.envioId });
   }
 
   return {
@@ -1145,17 +1210,42 @@ async function enviarJob(job, progresso) {
 }
 
 async function processarFila() {
-  if (!getConfigurado() || !conectado || !transportePronto || processandoJob || jobEmEspera?.envioIndeterminado) return;
+  if (!getConfigurado() || processandoJob) return;
+  const temConfirmacaoPendente = jobEmEspera?.checkpointPendente || jobEmEspera?.conclusao;
+  if (!temConfirmacaoPendente && (!conectado || !transportePronto || jobEmEspera?.envioIndeterminado)) return;
 
   processandoJob = true;
 
   try {
+    // Only API acknowledgements may continue while WhatsApp is offline.
+    if (jobEmEspera?.checkpointPendente) {
+      await salvarCheckpointJob(jobEmEspera, jobEmEspera.checkpointPendente);
+    }
+    if (jobEmEspera?.conclusao) {
+      await chamarApi(`/whatsapp/agente/jobs/${jobEmEspera.job.id}/concluir`, jobEmEspera.conclusao);
+      logInfo(`Job #${jobEmEspera.job.id} concluido: ${jobEmEspera.conclusao.status}`);
+      jobEmEspera = null;
+      return;
+    }
+    if (!conectado || !transportePronto || jobEmEspera?.envioIndeterminado) return;
     // Validate before claiming work, including after a previously connected transport drops.
     await aguardarTransporteWhatsAppPronto();
     if (!jobEmEspera) {
-      const data = await chamarApi("/whatsapp/agente/jobs/proximo", {});
+      const data = await chamarApi("/whatsapp/agente/jobs/proximo", { progresso_versao: 1 });
       if (!data?.job) return;
-      jobEmEspera = { job: data.job, mensagemEnviada: false, documentosEnviados: 0 };
+      if (!Number.isSafeInteger(data.job.documentos_enviados) || typeof data.job.envio_indeterminado !== "boolean") {
+        throw new Error("Backend sem suporte a progresso persistente; fila pausada ate atualizar a API e aplicar a migration");
+      }
+      jobEmEspera = {};
+      aplicarProgressoJob(jobEmEspera, data.job);
+      if (jobEmEspera.envioIndeterminado || data.job.envio_em_curso) {
+        jobEmEspera.envioIndeterminado = true;
+        const mensagem = `Job #${data.job.id} requer reconciliacao: envio anterior sem confirmacao; nenhum reenvio automatico`;
+        logWarn(mensagem);
+        atualizarEstado({ ultimoErro: mensagem });
+        await salvarCheckpointJob(jobEmEspera, { envio_indeterminado: true });
+        return;
+      }
       logInfo(`Processando job #${data.job.id} (${data.job.tipo})`);
     }
     const progresso = jobEmEspera;
@@ -1170,21 +1260,23 @@ async function processarFila() {
           erro_ultimo: resultado.aviso_documento || null,
         };
       } catch (error) {
+        if (error.code === "WHATSAPP_CHECKPOINT_PENDING") throw error;
         if (isErroTransporteTransitorio(error)) {
-          progresso.envioIndeterminado = Boolean(error.envioIndeterminado);
+          progresso.envioIndeterminado = progresso.envioIndeterminado || Boolean(error.envioIndeterminado);
           if (!progresso.envioIndeterminado && transportePronto) {
             invalidarTransporteWhatsApp();
             atualizarEstado({ whatsappState: "SYNCING" });
             await aguardarTransporteWhatsAppPronto().catch(() => {});
           }
           const mensagem = progresso.envioIndeterminado
-            ? `Job #${job.id} com envio sem confirmacao; fila pausada para evitar duplicidade`
+            ? `Job #${job.id} com envio sem confirmacao; fila pausada, requer reconciliacao`
             : `Job #${job.id} aguardando transporte; etapas enviadas preservadas`;
           logWarn(mensagem, error.message);
           atualizarEstado({ ultimoErro: mensagem });
           return;
         }
-        progresso.conclusao = { status: "FALHA", erro_ultimo: error.message };
+        if (progresso.envioIndeterminado) return;
+        progresso.conclusao = { status: "FALHA", erro_ultimo: error.message, envio_id: progresso.envioId };
         logError(`Falha no job #${job.id}`, error);
       }
     }
@@ -1201,6 +1293,7 @@ async function processarFila() {
 function configurarTimers() {
   if (!pingTimer) {
     pingTimer = setInterval(() => {
+      renovarLeaseJob();
       if (conectado && transportePronto && !jobEmEspera?.envioIndeterminado) {
         ping("CONECTADO", {
           telefone_conectado: getTelefoneConectado(),
