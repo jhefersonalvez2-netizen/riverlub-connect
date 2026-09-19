@@ -675,9 +675,9 @@ async function forcarResolucaoLid(chatId) {
 
 function isErroApiWhatsAppNaoInjetada(error) {
   const texto = String(error?.message || error || "");
-  return /Cannot read properties of undefined \(reading ['"]getChat['"]\)/i.test(texto)
-    || /window\.WWebJS/i.test(texto)
-    || /WWebJS.*getChat/i.test(texto);
+  return /Cannot read properties of (?:undefined|null) \(reading ['"](?:getChat|sendMessage)['"]\)/i.test(texto)
+    || /(?:window\.)?WWebJS is not defined/i.test(texto)
+    || /(?:window\.)?WWebJS\.(?:getChat|sendMessage) is not a function/i.test(texto);
 }
 
 function executarComTimeout(promise, timeoutMs, mensagem) {
@@ -873,7 +873,12 @@ async function enviarParaDestino(destino, conteudo, opcoes = undefined) {
       } catch (error) {
         ultimoErro = error;
 
-        if (isErroApiWhatsAppNaoInjetada(error) && !recuperacaoTentada) {
+        // A media ID collision is not an injection or LID failure; never retry it.
+        if (/Data passed to getter must include an id property/i.test(String(error?.message || error))) {
+          throw error;
+        }
+
+        if (isErroApiWhatsAppNaoInjetada(error) && !recuperacaoTentada && !await apiEnvioWhatsAppDisponivel()) {
           recuperacaoTentada = true;
           await recuperarApiEnvioWhatsApp();
           destinoAtual = await resolverDestinoWhatsApp(destino.telefone);

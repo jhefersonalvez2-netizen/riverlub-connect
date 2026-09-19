@@ -26,6 +26,7 @@ jobs:
       - name: Validate bundled WhatsApp agent
         run: |
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
+          node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
           node --check vendor/whatsapp-agent/src/index.js
           npm audit --omit=dev --json --prefix vendor/whatsapp-agent > /tmp/agent-audit.json || true
       - name: Enforce agent security policy
