@@ -59,7 +59,8 @@ jobs:
         shell: powershell
         run: |
           npm run build:ui
-          cargo check --manifest-path src-tauri/Cargo.toml --locked
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo metadata --manifest-path src-tauri/Cargo.toml --locked --no-deps --format-version 1 | Out-Null
 
       - name: Build installer smoke test
         run: npm run tauri:build -- --locked
