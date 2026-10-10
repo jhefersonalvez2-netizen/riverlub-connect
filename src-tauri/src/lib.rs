@@ -660,7 +660,7 @@ pub fn run_supervisor() {
     if let Ok(mut guard) = state.lock() {
         guard.desired_running = false;
         stop_agent(&mut guard);
-    }
+    };
 }
 
 fn cleanup_orphaned_runtime(runtime: &ResolvedAgentRuntime) -> Vec<u32> {
