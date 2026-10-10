@@ -34,11 +34,8 @@ jobs:
       - name: Apply v0.4 architecture
         run: python scripts/apply_v040.py
 
-      - name: Refresh lockfiles
-        shell: powershell
-        run: |
-          npm install --package-lock-only --ignore-scripts
-          cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+      - name: Refresh npm lockfile
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Apply Rust format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
@@ -62,10 +59,10 @@ jobs:
         shell: powershell
         run: |
           npm run build:ui
-          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Build installer smoke test
-        run: npm run tauri:build
+        run: npm run tauri:build -- --locked
 
       - name: Commit validated migration
         shell: powershell
