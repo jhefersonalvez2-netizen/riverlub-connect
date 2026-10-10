@@ -25,6 +25,7 @@ jobs:
           npm audit --omit=dev --audit-level=high
       - name: Validate bundled WhatsApp agent
         run: |
+          npm install --package-lock-only --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
           node --check vendor/whatsapp-agent/src/index.js
@@ -37,46 +38,67 @@ jobs:
 
           data = json.loads(Path('/tmp/agent-audit.json').read_text(encoding='utf-8'))
           vulns = data.get('vulnerabilities', {}) or {}
-          severity_rank = {'info': 0, 'low': 1, 'moderate': 2, 'high': 3, 'critical': 4}
-          # extract-zip is only present under Puppeteer; this packaged agent uses the
-          # machine's existing Chrome and the release install runs with --ignore-scripts.
-          # GHSA-7pqw-9j4j-h8q3 currently has no patched npm version published.
+          rank = {'info': 0, 'low': 1, 'moderate': 2, 'high': 3, 'critical': 4}
+          # extract-zip is reachable only through Puppeteer's browser-download path.
+          # Release installs use --ignore-scripts and RiverLub uses the machine's Chrome/Edge.
           allowed_urls = {
               'https://github.com/advisories/GHSA-jmr9-qjv8-65gv',
               'https://github.com/advisories/GHSA-7pqw-9j4j-h8q3',
           }
 
-          def atomic_advisories(name, seen=None):
+          def advisories(name, seen=None):
               seen = set() if seen is None else set(seen)
               if name in seen:
                   return [], []
               seen.add(name)
               vuln = vulns.get(name) or {}
-              advisories = []
-              unknown = []
+              found, unknown = [], []
               for via in vuln.get('via', []) or []:
                   if isinstance(via, dict):
-                      if severity_rank.get(str(via.get('severity', '')).lower(), 0) >= 3:
-                          advisories.append(via)
+                      if rank.get(str(via.get('severity', '')).lower(), 0) >= 3:
+                          found.append(via)
                   elif isinstance(via, str):
                       if via in vulns:
-                          nested, nested_unknown = atomic_advisories(via, seen)
-                          advisories.extend(nested)
-                          unknown.extend(nested_unknown)
+                          nested, missing = advisories(via, seen)
+                          found.extend(nested)
+                          unknown.extend(missing)
                       else:
                           unknown.append(via)
-              return advisories, unknown
+              return found, unknown
 
           unexpected = []
           for name, vuln in vulns.items():
-              if severity_rank.get(str(vuln.get('severity', '')).lower(), 0) < 3:
+              if rank.get(str(vuln.get('severity', '')).lower(), 0) < 3:
                   continue
-              advisories, unknown = atomic_advisories(name)
-              urls = {str(item.get('url') or '').strip() for item in advisories if item.get('url')}
+              found, unknown = advisories(name)
+              urls = {str(item.get('url') or '').strip() for item in found if item.get('url')}
               if unknown or not urls or not urls.issubset(allowed_urls):
                   unexpected.append({'name': name, 'urls': sorted(urls), 'unknown': unknown})
 
           if unexpected:
               raise SystemExit(f'Unexpected high/critical agent advisories: {unexpected}')
+          print('No unexpected high/critical agent advisories.')
 
-          print('Agent audit contains no unexpected high/critical advisory.')
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare bundled Node runtime
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force vendor/node | Out-Null
+          Copy-Item (Get-Command node.exe).Source vendor/node/node.exe -Force
+      - name: Prepare WhatsApp agent runtime
+        run: |
+          npm install --package-lock-only --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
+          npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
+          node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
+      - name: Build Windows installer
+        run: npm run tauri:build
