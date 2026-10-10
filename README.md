@@ -134,3 +134,12 @@ Pendencias antes de entregar em massa:
 - Decidir se Puppeteer/Chromium sera embutido ou se Chrome/Edge local sera requisito.
 - Pipeline de release no GitHub.
 - Teste em Windows limpo, usuario sem permissao admin, SmartScreen e antivirus.
+## Arquitetura de lifecycle v0.4
+
+- O runtime executavel e copiado de forma validada para `%LOCALAPPDATA%/RiverLub Connect/runtime/<versao>` e nunca e executado diretamente da pasta que o instalador sobrescreve.
+- A ativacao da pasta de runtime usa staging + rename, evitando runtime parcialmente copiado.
+- No Windows, o processo principal usa Job Object com `KILL_ON_JOB_CLOSE`; Node e Chrome/Edge descendentes sao encerrados pelo sistema operacional se o Connect morrer.
+- A instancia unica usa IPC local em `127.0.0.1:47850`; uma segunda abertura restaura a janela e, se a instancia anterior estiver travada, so a encerra apos validar o PID e o caminho exato do executavel.
+- O X envia o Connect para a bandeja. A bandeja oferece Abrir, Reiniciar WhatsApp e Sair completamente.
+- O instalador aborta se o runtime legado continuar bloqueado; nao e permitido seguir com instalacao parcial.
+- Eventos do desktop ficam em `%LOCALAPPDATA%/RiverLub Connect/logs/desktop.log` com rotacao simples e sem QR/token.

@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
+mod desktop_lifecycle;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -218,6 +220,7 @@ fn resolve_dev_agent_dir() -> Option<PathBuf> {
 
 fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime {
     let resource_dir = resolve_resource_dir(app);
+    let versioned_runtime_dir = desktop_lifecycle::versioned_runtime_dir();
     let env_agent_dir = env_path_var("RIVERLUB_CONNECT_AGENT_DIR").and_then(|candidate| {
         let entry = candidate.join("src").join("index.js");
         if entry.exists() {
@@ -226,6 +229,11 @@ fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime
             None
         }
     });
+    let versioned_agent_dir = {
+        let candidate = versioned_runtime_dir.join("whatsapp-agent");
+        let entry = candidate.join("src").join("index.js");
+        entry.exists().then_some(candidate)
+    };
     let bundled_agent_dir = resource_dir.as_ref().and_then(|dir| {
         let candidate = dir.join("runtime").join("whatsapp-agent");
         let entry = candidate.join("src").join("index.js");
@@ -239,6 +247,8 @@ fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime
 
     let (agent_dir, runtime_origin) = if env_agent_dir.is_some() {
         (env_agent_dir, "custom-env".to_string())
+    } else if versioned_agent_dir.is_some() {
+        (versioned_agent_dir, "versioned".to_string())
     } else if bundled_agent_dir.is_some() {
         (bundled_agent_dir, "bundled".to_string())
     } else if dev_agent_dir.is_some() {
@@ -247,6 +257,10 @@ fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime
         (None, "missing".to_string())
     };
 
+    let versioned_node = {
+        let candidate = versioned_runtime_dir.join("node").join("node.exe");
+        candidate.exists().then_some(candidate)
+    };
     let bundled_node = resource_dir
         .as_ref()
         .map(|dir| dir.join("runtime").join("node").join("node.exe"))
@@ -255,6 +269,7 @@ fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| versioned_node.as_ref().map(|path| display_path(path)))
         .or_else(|| bundled_node.as_ref().map(|path| display_path(path)))
         .unwrap_or_else(|| "node".to_string());
     let node_version = resolve_node_version(&node_command);
@@ -556,12 +571,13 @@ fn request_local_agent(method: &str, path: &str) -> Result<serde_json::Value, St
         .ok_or_else(|| "Resposta local invalida do agente WhatsApp".to_string())?;
     let status_line = headers.lines().next().unwrap_or_default();
     let decoded_body = decode_http_body(headers, body)?;
-    let payload = serde_json::from_str::<serde_json::Value>(decoded_body.trim()).unwrap_or_else(|_| {
-        serde_json::json!({
-            "sucesso": false,
-            "erro": "Resposta local sem JSON valido"
-        })
-    });
+    let payload =
+        serde_json::from_str::<serde_json::Value>(decoded_body.trim()).unwrap_or_else(|_| {
+            serde_json::json!({
+                "sucesso": false,
+                "erro": "Resposta local sem JSON valido"
+            })
+        });
 
     if !status_line.contains(" 200 ") {
         let message = payload
@@ -674,6 +690,7 @@ fn cleanup_orphaned_runtime_processes(
     let (_, managed_pid, _) = current_managed_process(state)?;
     let mut candidates = runtime_process_pids(&runtime);
 
+    candidates.extend(desktop_lifecycle::versioned_runtime_process_pids());
     candidates.extend(browser_session_process_pids());
     candidates.sort_unstable();
     candidates.dedup();
@@ -1094,15 +1111,34 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 pub fn run() {
+    let args = env::args().collect::<Vec<_>>();
+    let control_listener = match desktop_lifecycle::acquire_primary_instance(&args) {
+        Ok(Some(listener)) => listener,
+        Ok(None) => return,
+        Err(error) => {
+            desktop_lifecycle::show_startup_error(&error);
+            return;
+        }
+    };
+
+    let _process_tree_guard = desktop_lifecycle::ProcessTreeGuard::install();
+    desktop_lifecycle::log_event(
+        "UI_START",
+        &format!(
+            "version={} pid={} job_object={}",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id(),
+            _process_tree_guard.active()
+        ),
+    );
+
     tauri::Builder::default()
         .manage(AgentProcessState::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            focus_main_window(app);
-            handle_deep_link_args(app, args);
-            let state = app.state::<AgentProcessState>();
-            let _ = spawn_managed_agent(&state, app);
-        }))
-        .setup(|app| {
+        .setup(move |app| {
+            desktop_lifecycle::start_control_server(control_listener, app.handle().clone());
+            desktop_lifecycle::install_tray(app)?;
+            desktop_lifecycle::ensure_versioned_runtime(app.handle())
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             let state = app.state::<AgentProcessState>();
             let _ = cleanup_orphaned_runtime_processes(&state, app.handle());
             let _ = spawn_managed_agent(&state, app.handle());
@@ -1112,6 +1148,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                desktop_lifecycle::log_event("UI_HIDE_TO_TRAY", "close button requested");
                 let _ = window.hide();
             }
         })
