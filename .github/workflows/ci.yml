@@ -80,3 +80,23 @@ jobs:
               raise SystemExit(f'Unexpected high/critical agent advisories: {unexpected}')
 
           print('Agent audit contains no unexpected high/critical advisory.')
+
+  windows-lifecycle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate Windows desktop lifecycle
+        shell: powershell
+        run: |
+          npm ci
+          npm run build:ui
+          New-Item -ItemType Directory -Force vendor/node | Out-Null
+          Copy-Item (Get-Command node.exe).Source vendor/node/node.exe -Force
+          npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
+          node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
+          cargo check --manifest-path src-tauri/Cargo.toml
