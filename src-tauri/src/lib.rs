@@ -181,7 +181,7 @@ fn resolve_node_version(node_command: &str) -> Option<String> {
 fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime {
     let resource_dir = resolve_resource_dir(app);
     let bundled_agent_dir = resource_dir.as_ref().and_then(|dir| {
-        let candidate = dir.join("runtime").join("whatsapp-agent");
+        let candidate = dir.join("runtime").join(env!("CARGO_PKG_VERSION")).join("whatsapp-agent");
         candidate
             .join("src")
             .join("index.js")
@@ -198,7 +198,7 @@ fn resolve_agent_runtime(app: Option<&tauri::AppHandle>) -> ResolvedAgentRuntime
     };
     let bundled_node = resource_dir
         .as_ref()
-        .map(|dir| dir.join("runtime").join("node").join("node.exe"))
+        .map(|dir| dir.join("runtime").join(env!("CARGO_PKG_VERSION")).join("node").join("node.exe"))
         .filter(|candidate| candidate.exists());
     let node_command = bundled_node
         .as_ref()
@@ -682,6 +682,49 @@ fn cleanup_orphaned_runtime(runtime: &ResolvedAgentRuntime) -> Vec<u32> {
     killed
 }
 
+fn cleanup_legacy_bundled_runtimes(app: &tauri::AppHandle) {
+    let Some(resource_dir) = resolve_resource_dir(Some(app)) else {
+        return;
+    };
+    let runtime_root = resource_dir.join("runtime");
+    if !runtime_root.exists() {
+        return;
+    }
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    let legacy_node = runtime_root.join("node").join("node.exe");
+    if legacy_node.exists() {
+        for pid in process_ids_by_executable_path(&legacy_node) {
+            kill_pid(pid);
+        }
+    }
+
+    let mut cleanup_targets = vec![runtime_root.join("node"), runtime_root.join("whatsapp-agent")];
+    if let Ok(entries) = fs::read_dir(&runtime_root) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else { continue; };
+            if !file_type.is_dir() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == current_version || name == "node" || name == "whatsapp-agent" { continue; }
+            if !name.chars().all(|c| c.is_ascii_digit() || c == '.') { continue; }
+
+            let old_runtime = entry.path();
+            let old_node = old_runtime.join("node").join("node.exe");
+            if old_node.exists() {
+                for pid in process_ids_by_executable_path(&old_node) {
+                    kill_pid(pid);
+                }
+            }
+            cleanup_targets.push(old_runtime);
+        }
+    }
+
+    thread::sleep(Duration::from_millis(350));
+    for target in cleanup_targets {
+        let _ = fs::remove_dir_all(target);
+    }
+}
+
 fn ensure_supervisor(app: &tauri::AppHandle) -> Result<(), String> {
     if port_open(SUPERVISOR_PORT) {
         return Ok(());
@@ -959,6 +1002,7 @@ pub fn run() {
             handle_deep_link_args(app, args);
         }))
         .setup(|app| {
+            cleanup_legacy_bundled_runtimes(app.handle());
             let _ = ensure_supervisor(app.handle());
             handle_deep_link_args(app.handle(), env::args().collect());
             Ok(())
