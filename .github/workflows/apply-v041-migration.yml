@@ -101,7 +101,7 @@ jobs:
 
           cargo_lock = Path('src-tauri/Cargo.lock')
           cargo_text = cargo_lock.read_text(encoding='utf-8')
-          cargo_marker = 'name = "riverlub-connect"\nversion = "0.4.0"'
+          cargo_marker = 'name = "riverlub-connect"\nversion = "0.3.8"'
           if cargo_marker not in cargo_text:
               raise SystemExit('Cargo.lock RiverLub package marker not found')
           cargo_lock.write_text(cargo_text.replace(cargo_marker, 'name = "riverlub-connect"\nversion = "0.4.1"', 1), encoding='utf-8')
