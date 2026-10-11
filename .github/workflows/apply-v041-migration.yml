@@ -17,7 +17,11 @@ jobs:
           ref: release/v0.4.1-atomic-runtime
           fetch-depth: 0
 
-      - name: Patch runtime selection and lockfiles
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Patch runtime selection
         shell: bash
         run: |
           python - <<'PY'
@@ -95,12 +99,6 @@ jobs:
           text = text.replace(old_setup, new_setup, 1)
           lib.write_text(text, encoding='utf-8')
 
-          package_lock = Path('package-lock.json')
-          lock_text = package_lock.read_text(encoding='utf-8')
-          if lock_text.count('"version": "0.4.0"') < 2:
-              raise SystemExit('package-lock version markers not found')
-          package_lock.write_text(lock_text.replace('"version": "0.4.0"', '"version": "0.4.1"', 2), encoding='utf-8')
-
           cargo_lock = Path('src-tauri/Cargo.lock')
           cargo_text = cargo_lock.read_text(encoding='utf-8')
           cargo_marker = 'name = "riverlub-connect"\nversion = "0.4.0"'
@@ -108,6 +106,9 @@ jobs:
               raise SystemExit('Cargo.lock RiverLub package marker not found')
           cargo_lock.write_text(cargo_text.replace(cargo_marker, 'name = "riverlub-connect"\nversion = "0.4.1"', 1), encoding='utf-8')
           PY
+
+      - name: Refresh npm lock metadata
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Remove one-off migration workflow
         run: rm .github/workflows/apply-v041-migration.yml
