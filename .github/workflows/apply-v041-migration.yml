@@ -1,0 +1,142 @@
+name: Apply v0.4.1 Runtime Migration
+
+on:
+  push:
+    branches:
+      - release/v0.4.1-atomic-runtime
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'chore: apply v0.4.1 runtime migration') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/v0.4.1-atomic-runtime
+          fetch-depth: 0
+
+      - name: Patch runtime selection and lockfiles
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          lib = Path('src-tauri/src/lib.rs')
+          text = lib.read_text(encoding='utf-8')
+
+          old_agent = 'let candidate = dir.join("runtime").join("whatsapp-agent");'
+          new_agent = 'let candidate = dir.join("runtime").join(env!("CARGO_PKG_VERSION")).join("whatsapp-agent");'
+          if old_agent not in text:
+              raise SystemExit('resolve_agent_runtime agent path marker not found')
+          text = text.replace(old_agent, new_agent, 1)
+
+          old_node = '.map(|dir| dir.join("runtime").join("node").join("node.exe"))'
+          new_node = '.map(|dir| dir.join("runtime").join(env!("CARGO_PKG_VERSION")).join("node").join("node.exe"))'
+          if old_node not in text:
+              raise SystemExit('resolve_agent_runtime node path marker not found')
+          text = text.replace(old_node, new_node, 1)
+
+          marker = '''fn ensure_supervisor(app: &tauri::AppHandle) -> Result<(), String> {'''
+          if marker not in text:
+              raise SystemExit('ensure_supervisor marker not found')
+
+          cleanup = r'''fn cleanup_legacy_bundled_runtimes(app: &tauri::AppHandle) {
+              let Some(resource_dir) = resolve_resource_dir(Some(app)) else {
+                  return;
+              };
+              let runtime_root = resource_dir.join("runtime");
+              if !runtime_root.exists() {
+                  return;
+              }
+
+              let current_version = env!("CARGO_PKG_VERSION");
+
+              let legacy_node = runtime_root.join("node").join("node.exe");
+              if legacy_node.exists() {
+                  for pid in process_ids_by_executable_path(&legacy_node) {
+                      kill_pid(pid);
+                  }
+              }
+
+              let mut cleanup_targets = vec![
+                  runtime_root.join("node"),
+                  runtime_root.join("whatsapp-agent"),
+              ];
+
+              if let Ok(entries) = fs::read_dir(&runtime_root) {
+                  for entry in entries.flatten() {
+                      let Ok(file_type) = entry.file_type() else {
+                          continue;
+                      };
+                      if !file_type.is_dir() {
+                          continue;
+                      }
+                      let name = entry.file_name().to_string_lossy().to_string();
+                      if name == current_version || name == "node" || name == "whatsapp-agent" {
+                          continue;
+                      }
+                      if !name.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                          continue;
+                      }
+
+                      let old_runtime = entry.path();
+                      let old_node = old_runtime.join("node").join("node.exe");
+                      if old_node.exists() {
+                          for pid in process_ids_by_executable_path(&old_node) {
+                              kill_pid(pid);
+                          }
+                      }
+                      cleanup_targets.push(old_runtime);
+                  }
+              }
+
+              thread::sleep(Duration::from_millis(350));
+              for target in cleanup_targets {
+                  let _ = fs::remove_dir_all(target);
+              }
+          }
+
+          '''
+          text = text.replace(marker, cleanup + marker, 1)
+
+          old_setup = '''        .setup(|app| {
+                      let _ = ensure_supervisor(app.handle());'''
+          new_setup = '''        .setup(|app| {
+                      cleanup_legacy_bundled_runtimes(app.handle());
+                      let _ = ensure_supervisor(app.handle());'''
+          if old_setup not in text:
+              raise SystemExit('setup marker not found')
+          text = text.replace(old_setup, new_setup, 1)
+
+          lib.write_text(text, encoding='utf-8')
+
+          package_lock = Path('package-lock.json')
+          lock_text = package_lock.read_text(encoding='utf-8')
+          if lock_text.count('"version": "0.4.0"') < 2:
+              raise SystemExit('package-lock version markers not found')
+          lock_text = lock_text.replace('"version": "0.4.0"', '"version": "0.4.1"', 2)
+          package_lock.write_text(lock_text, encoding='utf-8')
+
+          cargo_lock = Path('src-tauri/Cargo.lock')
+          cargo_text = cargo_lock.read_text(encoding='utf-8')
+          marker = 'name = "riverlub-connect"\nversion = "0.4.0"'
+          if marker not in cargo_text:
+              raise SystemExit('Cargo.lock RiverLub package marker not found')
+          cargo_text = cargo_text.replace(marker, 'name = "riverlub-connect"\nversion = "0.4.1"', 1)
+          cargo_lock.write_text(cargo_text, encoding='utf-8')
+          PY
+
+      - name: Remove one-off migration workflow
+        run: rm .github/workflows/apply-v041-migration.yml
+
+      - name: Commit migration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/lib.rs src-tauri/Cargo.lock package-lock.json .github/workflows/apply-v041-migration.yml
+          git commit -m "chore: apply v0.4.1 runtime migration"
+          git push origin HEAD:release/v0.4.1-atomic-runtime
