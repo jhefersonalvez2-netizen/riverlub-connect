@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, 'chore: apply v0.4.1 runtime migration') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +38,7 @@ jobs:
               raise SystemExit('resolve_agent_runtime node path marker not found')
           text = text.replace(old_node, new_node, 1)
 
-          marker = '''fn ensure_supervisor(app: &tauri::AppHandle) -> Result<(), String> {'''
+          marker = 'fn ensure_supervisor(app: &tauri::AppHandle) -> Result<(), String> {'
           if marker not in text:
               raise SystemExit('ensure_supervisor marker not found')
 
@@ -53,7 +52,6 @@ jobs:
               }
 
               let current_version = env!("CARGO_PKG_VERSION");
-
               let legacy_node = runtime_root.join("node").join("node.exe");
               if legacy_node.exists() {
                   for pid in process_ids_by_executable_path(&legacy_node) {
@@ -61,26 +59,14 @@ jobs:
                   }
               }
 
-              let mut cleanup_targets = vec![
-                  runtime_root.join("node"),
-                  runtime_root.join("whatsapp-agent"),
-              ];
-
+              let mut cleanup_targets = vec![runtime_root.join("node"), runtime_root.join("whatsapp-agent")];
               if let Ok(entries) = fs::read_dir(&runtime_root) {
                   for entry in entries.flatten() {
-                      let Ok(file_type) = entry.file_type() else {
-                          continue;
-                      };
-                      if !file_type.is_dir() {
-                          continue;
-                      }
+                      let Ok(file_type) = entry.file_type() else { continue; };
+                      if !file_type.is_dir() { continue; }
                       let name = entry.file_name().to_string_lossy().to_string();
-                      if name == current_version || name == "node" || name == "whatsapp-agent" {
-                          continue;
-                      }
-                      if !name.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                          continue;
-                      }
+                      if name == current_version || name == "node" || name == "whatsapp-agent" { continue; }
+                      if !name.chars().all(|c| c.is_ascii_digit() || c == '.') { continue; }
 
                       let old_runtime = entry.path();
                       let old_node = old_runtime.join("node").join("node.exe");
@@ -102,31 +88,25 @@ jobs:
           '''
           text = text.replace(marker, cleanup + marker, 1)
 
-          old_setup = '''        .setup(|app| {
-                      let _ = ensure_supervisor(app.handle());'''
-          new_setup = '''        .setup(|app| {
-                      cleanup_legacy_bundled_runtimes(app.handle());
-                      let _ = ensure_supervisor(app.handle());'''
+          old_setup = '        .setup(|app| {\n            let _ = ensure_supervisor(app.handle());'
+          new_setup = '        .setup(|app| {\n            cleanup_legacy_bundled_runtimes(app.handle());\n            let _ = ensure_supervisor(app.handle());'
           if old_setup not in text:
               raise SystemExit('setup marker not found')
           text = text.replace(old_setup, new_setup, 1)
-
           lib.write_text(text, encoding='utf-8')
 
           package_lock = Path('package-lock.json')
           lock_text = package_lock.read_text(encoding='utf-8')
           if lock_text.count('"version": "0.4.0"') < 2:
               raise SystemExit('package-lock version markers not found')
-          lock_text = lock_text.replace('"version": "0.4.0"', '"version": "0.4.1"', 2)
-          package_lock.write_text(lock_text, encoding='utf-8')
+          package_lock.write_text(lock_text.replace('"version": "0.4.0"', '"version": "0.4.1"', 2), encoding='utf-8')
 
           cargo_lock = Path('src-tauri/Cargo.lock')
           cargo_text = cargo_lock.read_text(encoding='utf-8')
-          marker = 'name = "riverlub-connect"\nversion = "0.4.0"'
-          if marker not in cargo_text:
+          cargo_marker = 'name = "riverlub-connect"\nversion = "0.4.0"'
+          if cargo_marker not in cargo_text:
               raise SystemExit('Cargo.lock RiverLub package marker not found')
-          cargo_text = cargo_text.replace(marker, 'name = "riverlub-connect"\nversion = "0.4.1"', 1)
-          cargo_lock.write_text(cargo_text, encoding='utf-8')
+          cargo_lock.write_text(cargo_text.replace(cargo_marker, 'name = "riverlub-connect"\nversion = "0.4.1"', 1), encoding='utf-8')
           PY
 
       - name: Remove one-off migration workflow
