@@ -67,6 +67,10 @@ function isTauriRuntime() {
   return Boolean(window.__TAURI_INTERNALS__);
 }
 
+function getErrorMessage(error) {
+  return error?.message || (typeof error === "string" ? error : String(error || "Erro desconhecido"));
+}
+
 async function openExternalUrl(url) {
   if (isTauriRuntime()) {
     await invoke("open_external_url", { url });
@@ -330,6 +334,14 @@ function getNextSteps(status, health, processState) {
     ];
   }
 
+  if (status === AGENT_STATUS.UNCONFIGURED) {
+    return [
+      "Clique em Ativar pelo painel RiverLub para abrir o sistema Web.",
+      "No painel Web, clique em Conectar WhatsApp para ativar este computador.",
+      "Volte ao Connect para ler o QR que sera gerado automaticamente.",
+    ];
+  }
+
   if (status === AGENT_STATUS.CONNECTED) {
     return [
       "Mantenha o Connect aberto neste computador da oficina.",
@@ -388,6 +400,10 @@ function getPrimaryAction(status, health, processState) {
     return { label: "Abrir painel RiverLub", action: "panel", disabled: false };
   }
 
+  if (status === AGENT_STATUS.UNCONFIGURED) {
+    return { label: "Ativar pelo painel RiverLub", action: "activate", disabled: false };
+  }
+
   if (status === AGENT_STATUS.QR_READY) {
     return { label: "Leia o QR no celular", action: "none", disabled: true };
   }
@@ -401,6 +417,10 @@ function getPrimaryAction(status, health, processState) {
   }
 
   if (flags.sessionExpired || flags.qrExpired || status === AGENT_STATUS.ERROR) {
+    return { label: "Reconectar WhatsApp", action: "restart", disabled: false };
+  }
+
+  if (processState?.managedRunning && health?.configurado) {
     return { label: "Reconectar WhatsApp", action: "restart", disabled: false };
   }
 
@@ -422,6 +442,7 @@ function App() {
   });
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const [actionError, setActionError] = useState("");
   const [logsOpen, setLogsOpen] = useState(true);
   const [visible, setVisible] = useState(() => !document.hidden);
   const [diagnosticCopied, setDiagnosticCopied] = useState(false);
@@ -513,7 +534,8 @@ function App() {
           lastQrFingerprintRef.current = fingerprint;
           addEvent("info", "QR real recebido pelo Connect e pronto para leitura.");
         }
-      } else if (nextFlags.qrExpired) {
+      } else if (nextFlags.qrExpired || (nextHealth && !nextFlags.qrAvailable)) {
+        setQrDataUrl("");
         lastQrFingerprintRef.current = "";
       }
 
@@ -681,6 +703,7 @@ function App() {
 
   async function runAction(action, eventMessage, callback) {
     setBusyAction(action);
+    setActionError("");
     setDiagnosticCopied(false);
     try {
       const result = await callback();
@@ -692,7 +715,9 @@ function App() {
       await wait(700);
       await refreshStatus({ silent: true, includeLogs: true });
     } catch (error) {
-      addEvent("error", error.message || "Acao local falhou.");
+      const detail = getErrorMessage(error);
+      setActionError(detail);
+      addEvent("error", detail);
       setStatus(AGENT_STATUS.ERROR);
     } finally {
       setBusyAction("");
@@ -769,6 +794,19 @@ function App() {
   }
 
   async function handlePrimaryAction() {
+    if (primaryAction.action === "activate") {
+      try {
+        setActionError("");
+        await openExternalUrl(PANEL_URL);
+        addEvent("info", "Abra o painel Web e clique em Conectar WhatsApp para ativar este computador.");
+      } catch (error) {
+        const detail = getErrorMessage(error);
+        setActionError(detail);
+        addEvent("error", detail);
+      }
+      return;
+    }
+
     if (primaryAction.action === "panel") {
       await openExternalUrl(PANEL_URL);
       return;
@@ -911,6 +949,12 @@ function App() {
             <p className="eyebrow">Status atual</p>
             <h2>{meta.label}</h2>
             <p>{health?.erro_ultimo || meta.detail}</p>
+            {actionError ? (
+              <p className="action-error" role="alert">
+                <AlertTriangle size={17} />
+                {actionError}
+              </p>
+            ) : null}
             {processState?.externalRunning ? (
               <small>
                 Agente externo detectado. Por seguranca, o Connect nao vai encerrar esse processo.
