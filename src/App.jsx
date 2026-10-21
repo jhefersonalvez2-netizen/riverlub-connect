@@ -836,6 +836,8 @@ function App() {
       status_label: meta.label,
       process_origin: getProcessOrigin(processState),
       managed_pid: processState?.managedPid || null,
+      last_agent_exit_code: processState?.lastExitCode ?? null,
+      last_agent_exit_at: formatTimestampMs(processState?.lastExitAtMs),
       managed_process_tree_pids: processState?.managedProcessTreePids || [],
       runtime_process_pids: processState?.runtimeProcessPids || [],
       browser_session_pids: processState?.browserSessionPids || [],
@@ -948,7 +950,9 @@ function App() {
           <div className="status-copy">
             <p className="eyebrow">Status atual</p>
             <h2>{meta.label}</h2>
-            <p>{health?.erro_ultimo || meta.detail}</p>
+            <p>{health?.erro_ultimo || (processState?.lastExitCode != null && !processState?.managedRunning
+              ? `O agente fechou inesperadamente (codigo ${processState.lastExitCode}). Verifique Eventos e logs.`
+              : meta.detail)}</p>
             {actionError ? (
               <p className="action-error" role="alert">
                 <AlertTriangle size={17} />
@@ -1133,6 +1137,12 @@ function App() {
               <div>
                 <dt>PID Node</dt>
                 <dd>{processState?.managedPid || processState?.portOwnerPid || "-"}</dd>
+              </div>
+              <div>
+                <dt>Ultima falha do agente</dt>
+                <dd>{processState?.lastExitCode == null
+                  ? "-"
+                  : `Processo encerrado com codigo ${processState.lastExitCode}. Confira os logs abaixo.`}</dd>
               </div>
               <div>
                 <dt>Arvore do agente</dt>

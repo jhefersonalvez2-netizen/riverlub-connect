@@ -1,6 +1,6 @@
 [package]
 name = "riverlub-connect"
-version = "0.4.2"
+version = "0.4.3"
 description = "RiverLub Connect"
 authors = ["RiverLub"]
 license = "UNLICENSED"
