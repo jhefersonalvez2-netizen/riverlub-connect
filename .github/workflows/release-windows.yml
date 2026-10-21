@@ -60,6 +60,10 @@ jobs:
             throw "Versao inesperada do agente: $agentVersion"
           }
 
+      - name: Smoke test bundled WhatsApp agent startup
+        shell: pwsh
+        run: ./scripts/smoke-whatsapp-agent.ps1
+
       - name: Build NSIS installer
         run: npm run tauri:build
 
