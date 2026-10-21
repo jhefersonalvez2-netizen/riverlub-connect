@@ -1070,13 +1070,13 @@ mod http_response_tests {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n";
         let payload = "{\"sucesso\":true,\"instalado\":true}";
         let body = format!("{:x}\r\n{}\r\n0\r\n\r\n", payload.len(), payload);
-        assert_eq!(decode_http_body(head, &body).unwrap(), payload.as_bytes());
+        assert_eq!(decode_http_body(head, &body).unwrap(), payload.as_bytes().to_vec());
     }
 
     #[test]
     fn reads_content_length_local_agent_status() {
         let head = "HTTP/1.1 200 OK\r\nContent-Length: 16\r\n";
-        assert_eq!(decode_http_body(head, "{\"sucesso\":true}").unwrap(), b"{\"sucesso\":true}");
+        assert_eq!(decode_http_body(head, "{\"sucesso\":true}").unwrap(), b"{\"sucesso\":true}".to_vec());
     }
 
     #[test]
