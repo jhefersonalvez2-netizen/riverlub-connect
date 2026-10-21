@@ -1691,11 +1691,14 @@ function aplicarCors(req, res) {
 
 function enviarJson(req, res, status, payload) {
   aplicarCors(req, res);
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "Content-Length": body.length,
+    "X-Content-Type-Options": "nosniff",
   });
-  res.end(JSON.stringify(payload));
+  res.end(body);
 }
 
 function lerBodyJson(req) {

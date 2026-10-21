@@ -35,6 +35,16 @@ RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLu
 8. Com `ready`, o agente envia `telefone_conectado` e `nome_conta` ao backend e tambem retorna esses dados no status local.
 9. Ao fechar/reiniciar/parar, o Connect solicita `POST /shutdown` ao agente gerenciado, aguarda a porta liberar e encerra a arvore restante se necessario.
 
+## Primeiro uso e ativacao do WhatsApp
+
+1. Abra o Connect. Ele inicia o agente local, mas **nao cria token de oficina**.
+2. Se aparecer **Aguardando ativacao**, clique em **Ativar pelo painel RiverLub**.
+3. No painel Web autenticado como administrador, clique em **Conectar WhatsApp** para vincular o agente local a oficina. O Web envia o token diretamente para `http://127.0.0.1:47851/ativar`.
+4. Volte ao Connect. O app consulta `/health` e `/qr` com comandos nativos Tauri e exibe o QR para pareamento.
+5. Caso a sessao tenha parado apos a ativacao, use **Reconectar WhatsApp**. Erros aparecem na tela e no historico de eventos.
+
+O aplicativo nao recebe nem armazena token pelo deep link. A ativacao exige autenticacao no painel Web. O protocolo local `/health` e `/qr` utiliza respostas JSON com `Content-Length`; a camada Rust tambem suporta respostas HTTP antigas com `Transfer-Encoding: chunked`.
+
 ## Ciclo de vida do runtime
 
 - O Connect guarda o PID do processo Node iniciado por ele.

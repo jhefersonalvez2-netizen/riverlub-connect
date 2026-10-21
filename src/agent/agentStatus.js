@@ -1,6 +1,7 @@
 export const AGENT_STATUS = {
   READY: "READY",
   STOPPED: "STOPPED",
+  UNCONFIGURED: "UNCONFIGURED",
   STARTING: "STARTING",
   RUNNING: "RUNNING",
   WAITING_QR: "WAITING_QR",
@@ -24,6 +25,11 @@ export const STATUS_META = {
     label: "Agente parado",
     tone: "neutral",
     detail: "Nenhum agente local respondeu neste computador.",
+  },
+  [AGENT_STATUS.UNCONFIGURED]: {
+    label: "Aguardando ativacao",
+    tone: "warning",
+    detail: "O agente local esta instalado, mas ainda precisa ser ativado pelo painel RiverLub. Abra o painel, clique em Conectar WhatsApp e volte ao Connect para ler o QR.",
   },
   [AGENT_STATUS.STARTING]: {
     label: "Iniciando agente",
@@ -169,6 +175,10 @@ export function getAgentStatus({ health, processState }) {
 
   if (health?.configurado && health?.ultimo_qr_em) {
     return AGENT_STATUS.WAITING_QR;
+  }
+
+  if (health?.instalado && health?.configurado === false) {
+    return AGENT_STATUS.UNCONFIGURED;
   }
 
   if (health?.instalado && health?.configurado && !qrExpired) {

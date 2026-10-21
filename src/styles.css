@@ -257,6 +257,23 @@ h2 {
   min-width: 0;
 }
 
+.action-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #fff;
+  background: rgba(151, 25, 40, 0.32);
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.action-error svg {
+  flex-shrink: 0;
+}
+
 .status-copy small {
   display: inline-block;
   margin-top: 10px;
