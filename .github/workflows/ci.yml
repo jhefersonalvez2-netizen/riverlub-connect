@@ -105,3 +105,6 @@ jobs:
         run: ./scripts/smoke-whatsapp-agent.ps1
       - name: Build Windows installer
         run: npm run tauri:build
+      - name: Smoke test actual Rust Supervisor and Node agent
+        shell: pwsh
+        run: ./scripts/smoke-connect-supervisor.ps1
