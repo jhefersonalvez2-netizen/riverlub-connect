@@ -100,5 +100,8 @@ jobs:
           npm install --package-lock-only --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
+      - name: Smoke test bundled WhatsApp agent startup
+        shell: pwsh
+        run: ./scripts/smoke-whatsapp-agent.ps1
       - name: Build Windows installer
         run: npm run tauri:build
