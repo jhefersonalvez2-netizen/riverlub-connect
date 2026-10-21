@@ -82,6 +82,8 @@ struct AgentProcessStatus {
     last_cleanup_pids: Vec<u32>,
     last_cleanup_at_ms: Option<u128>,
     port_open: bool,
+    last_exit_code: Option<i32>,
+    last_exit_at_ms: Option<u128>,
     external_running: bool,
     can_start: bool,
     port: u16,
@@ -121,6 +123,8 @@ struct SupervisorState {
     agent_dir: PathBuf,
     runtime_origin: String,
     restart_failures: u32,
+    last_exit_code: Option<i32>,
+    last_exit_at_ms: Option<u128>,
 }
 
 fn now_ms() -> u128 {
@@ -404,10 +408,22 @@ fn close_job_handle(handle: isize) {
 fn close_job_handle(_handle: isize) {}
 
 fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
-    if state.child.is_some() {
-        return Ok(());
+    if let Some(child) = state.child.as_mut() {
+        match child.child.try_wait() {
+            Ok(None) => return Ok(()),
+            Ok(Some(status)) => {
+                state.last_exit_code = status.code();
+                state.last_exit_at_ms = Some(now_ms());
+                let handle = child.job_handle;
+                close_job_handle(handle);
+                state.child = None;
+            }
+            Err(_) => {
+                state.child = None;
+            }
+        }
     }
-    let entry = state.agent_dir.join("src").join("index.js");
+    let entry = state.agent_dir.join("src").join("bootstrap.cjs");
     if !entry.exists() {
         return Err(format!("Agente nao encontrado em {}", display_path(&entry)));
     }
@@ -441,7 +457,6 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
         started_at_ms: now_ms(),
         job_handle,
     });
-    state.restart_failures = 0;
     Ok(())
 }
 
@@ -530,8 +545,17 @@ fn supervisor_status(state: &mut SupervisorState) -> Value {
                 running = true;
                 pid = Some(managed.pid);
                 started_at = Some(managed.started_at_ms);
+                if port_open(AGENT_PORT) {
+                    state.restart_failures = 0;
+                }
             }
-            Ok(Some(_)) | Err(_) => {
+            Ok(Some(exit_status)) => {
+                state.last_exit_code = exit_status.code();
+                state.last_exit_at_ms = Some(now_ms());
+                close_job_handle(managed.job_handle);
+                state.child = None;
+            }
+            Err(_) => {
                 close_job_handle(managed.job_handle);
                 state.child = None;
             }
@@ -541,7 +565,10 @@ fn supervisor_status(state: &mut SupervisorState) -> Value {
         "managedRunning": running,
         "managedPid": pid,
         "managedStartedAtMs": started_at,
-        "desiredRunning": state.desired_running
+        "desiredRunning": state.desired_running,
+        "lastExitCode": state.last_exit_code,
+        "lastExitAtMs": state.last_exit_at_ms,
+        "restartFailures": state.restart_failures
     })
 }
 
@@ -644,6 +671,8 @@ pub fn run_supervisor() {
         agent_dir,
         runtime_origin,
         restart_failures: 0,
+        last_exit_code: None,
+        last_exit_at_ms: None,
     }));
     if let Ok(mut guard) = state.lock() {
         let _ = spawn_agent(&mut guard);
@@ -655,7 +684,9 @@ pub fn run_supervisor() {
         let mut delay = 0u64;
         if let Ok(mut guard) = watchdog_state.lock() {
             if let Some(managed) = guard.child.as_mut() {
-                if managed.child.try_wait().ok().flatten().is_some() {
+                if let Ok(Some(exit_status)) = managed.child.try_wait() {
+                    guard.last_exit_code = exit_status.code();
+                    guard.last_exit_at_ms = Some(now_ms());
                     close_job_handle(managed.job_handle);
                     guard.child = None;
                     if guard.desired_running {
@@ -842,12 +873,47 @@ fn build_process_status(app: &tauri::AppHandle, state: &AppState, message: Optio
         last_cleanup_pids: cleanup.as_ref().map(|v| v.pids.clone()).unwrap_or_default(),
         last_cleanup_at_ms: cleanup.map(|v| v.at_ms),
         port_open: agent_port_open,
+        last_exit_code: supervisor.get("lastExitCode").and_then(Value::as_i64).map(|code| code as i32),
+        last_exit_at_ms: supervisor.get("lastExitAtMs").and_then(Value::as_u64).map(|ms| ms as u128),
         external_running,
         can_start: !external_running,
         port: AGENT_PORT,
         message,
         paths,
     }
+}
+
+fn wait_agent_ready(timeout: Duration) -> bool {
+    let start = now_ms();
+    while now_ms().saturating_sub(start) < timeout.as_millis() {
+        if request_json(AGENT_PORT, "GET", "/health")
+            .ok()
+            .and_then(|payload| payload.get("instalado").and_then(Value::as_bool))
+            == Some(true)
+        {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn verify_agent_started(app: &tauri::AppHandle, state: &AppState) -> Result<AgentProcessStatus, String> {
+    if !wait_agent_ready(Duration::from_secs(8)) {
+        let supervisor = request_json(SUPERVISOR_PORT, "GET", "/status").unwrap_or_default();
+        let exit_detail = supervisor.get("lastExitCode")
+            .and_then(Value::as_i64)
+            .map(|code| format!(" (codigo de saida: {code})"))
+            .unwrap_or_default();
+        return Err(format!(
+            "O Supervisor recebeu o comando, mas o agente WhatsApp nao abriu a porta 47851{exit_detail}. Verifique Eventos e logs > Atualizar logs. Nenhuma sessao foi apagada."
+        ));
+    }
+    Ok(build_process_status(
+        app,
+        state,
+        Some("Agente local confirmado: porta 47851 e /health respondendo.".to_string()),
+    ))
 }
 
 #[tauri::command]
@@ -862,7 +928,7 @@ fn start_agent_process(app: tauri::AppHandle, state: tauri::State<'_, AppState>)
     if let Some(error) = payload.get("error").and_then(Value::as_str) {
         return Err(error.to_string());
     }
-    Ok(build_process_status(&app, &state, Some("Agente WhatsApp iniciado pelo Supervisor RiverLub.".to_string())))
+    verify_agent_started(&app, &state)
 }
 
 #[tauri::command]
@@ -879,7 +945,7 @@ fn restart_agent_process(app: tauri::AppHandle, state: tauri::State<'_, AppState
     if let Some(error) = payload.get("error").and_then(Value::as_str) {
         return Err(error.to_string());
     }
-    Ok(build_process_status(&app, &state, Some("Agente WhatsApp reiniciado com seguranca.".to_string())))
+    verify_agent_started(&app, &state)
 }
 
 #[tauri::command]
