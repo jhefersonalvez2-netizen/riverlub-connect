@@ -683,24 +683,27 @@ pub fn run_supervisor() {
         let mut should_restart = false;
         let mut delay = 0u64;
         if let Ok(mut guard) = watchdog_state.lock() {
-            if let Some(managed) = guard.child.as_mut() {
-                if let Ok(Some(exit_status)) = managed.child.try_wait() {
-                    guard.last_exit_code = exit_status.code();
-                    guard.last_exit_at_ms = Some(now_ms());
-                    close_job_handle(managed.job_handle);
-                    guard.child = None;
-                    if guard.desired_running {
-                        guard.restart_failures = guard.restart_failures.saturating_add(1);
-                        should_restart = true;
-                        delay = match guard.restart_failures {
-                            0 | 1 => 2,
-                            2 => 5,
-                            3 => 10,
-                            _ => 30,
-                        };
-                    }
+            let exit = guard.child.as_mut().and_then(|managed| {
+                managed.child.try_wait().ok().flatten().map(|status| {
+                    (status.code(), managed.job_handle)
+                })
+            });
+            if let Some((exit_code, job_handle)) = exit {
+                guard.last_exit_code = exit_code;
+                guard.last_exit_at_ms = Some(now_ms());
+                close_job_handle(job_handle);
+                guard.child = None;
+                if guard.desired_running {
+                    guard.restart_failures = guard.restart_failures.saturating_add(1);
+                    should_restart = true;
+                    delay = match guard.restart_failures {
+                        0 | 1 => 2,
+                        2 => 5,
+                        3 => 10,
+                        _ => 30,
+                    };
                 }
-            } else if guard.desired_running {
+            } else if guard.child.is_none() && guard.desired_running {
                 should_restart = true;
                 delay = 2;
             }
