@@ -445,6 +445,41 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
     Ok(())
 }
 
+fn decode_http_body(head: &str, body: &str) -> Result<Vec<u8>, String> {
+    let is_chunked = head.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("transfer-encoding")
+                && value.split(',').any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        })
+    });
+    if !is_chunked {
+        return Ok(body.as_bytes().to_vec());
+    }
+
+    let mut remaining = body.as_bytes();
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = remaining.windows(2).position(|bytes| bytes == b"\r\n")
+            .ok_or_else(|| "Resposta HTTP chunked sem tamanho de bloco".to_string())?;
+        let size_line = std::str::from_utf8(&remaining[..line_end])
+            .map_err(|_| "Tamanho de bloco HTTP invalido".to_string())?;
+        let size = usize::from_str_radix(size_line.split(';').next().unwrap_or("").trim(), 16)
+            .map_err(|_| "Tamanho de bloco HTTP invalido".to_string())?;
+        remaining = &remaining[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        if size > remaining.len().saturating_sub(2)
+            || remaining.get(size..size + 2) != Some(&b"\r\n"[..])
+        {
+            return Err("Bloco HTTP chunked incompleto".to_string());
+        }
+        decoded.extend_from_slice(&remaining[..size]);
+        remaining = &remaining[size + 2..];
+    }
+    Ok(decoded)
+}
+
 fn request_json(port: u16, method: &str, path: &str) -> Result<Value, String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(700))
@@ -466,10 +501,11 @@ fn request_json(port: u16, method: &str, path: &str) -> Result<Value, String> {
     if !ok {
         return Err(format!("Servico local retornou erro: {}", head.lines().next().unwrap_or("sem status")));
     }
-    if body.trim().is_empty() {
+    let decoded = decode_http_body(head, body)?;
+    if decoded.iter().all(|byte| byte.is_ascii_whitespace()) {
         return Ok(json!({"ok": true}));
     }
-    serde_json::from_str(body.trim()).map_err(|e| format!("Resposta local invalida: {e}"))
+    serde_json::from_slice(&decoded).map_err(|e| format!("Resposta local invalida: {e}"))
 }
 
 fn stop_agent(state: &mut SupervisorState) {
@@ -1023,4 +1059,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar RiverLub Connect");
+}
+
+#[cfg(test)]
+mod http_response_tests {
+    use super::decode_http_body;
+
+    #[test]
+    fn reads_chunked_local_agent_status() {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n";
+        let payload = "{\"sucesso\":true,\"instalado\":true}";
+        let body = format!("{:x}\r\n{}\r\n0\r\n\r\n", payload.len(), payload);
+        assert_eq!(decode_http_body(head, &body).unwrap(), payload.as_bytes());
+    }
+
+    #[test]
+    fn reads_content_length_local_agent_status() {
+        let head = "HTTP/1.1 200 OK\r\nContent-Length: 16\r\n";
+        assert_eq!(decode_http_body(head, "{\"sucesso\":true}").unwrap(), b"{\"sucesso\":true}");
+    }
+
+    #[test]
+    fn rejects_incomplete_chunked_payload() {
+        let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n";
+        assert!(decode_http_body(head, "a\r\n{}\r\n0\r\n\r\n").is_err());
+    }
 }
