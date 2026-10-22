@@ -1,5 +1,7 @@
 # RiverLub Connect
 
+> **Suporte e continuidade:** leia [instrução.md](./instru%C3%A7%C3%A3o.md) antes de investigar problemas no Connect. O arquivo documenta os testes PowerShell, o erro EISDIR/paths Win32, a correção v0.4.5 e a validação de QR, autenticação e envio de orçamento.
+
 RiverLub Connect e o aplicativo desktop oficial para operacoes locais do RiverLub no Windows. Nesta fase ele passa a ser o centro do fluxo do WhatsApp da oficina: inicia o agente local, mostra o QR real, acompanha a sessao, le logs e protege o usuario final de terminal, `.cmd` e detalhes tecnicos.
 
 ## O que o Connect faz agora
