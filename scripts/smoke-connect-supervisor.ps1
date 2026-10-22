@@ -3,8 +3,11 @@ $ErrorActionPreference = "Stop"
 # End-to-end smoke test for the real Rust Supervisor + managed Node agent.
 # Uses temporary config, an empty token, and no WhatsApp session.
 $exe = (Resolve-Path "src-tauri/target/release/riverlub-connect.exe").Path
-$node = (Resolve-Path "vendor/node/node.exe").Path
-$agent = (Resolve-Path "vendor/whatsapp-agent").Path
+# Deliberately pass the Win32 verbatim form returned by Tauri resource_dir().
+# Without normalization in the Rust Supervisor, Node 22 crashes with
+# "EISDIR: illegal operation on a directory, lstat 'C:'" before /health opens.
+$node = '\\?\' + (Resolve-Path "vendor/node/node.exe").Path
+$agent = '\\?\' + (Resolve-Path "vendor/whatsapp-agent").Path
 $root = Join-Path $env:RUNNER_TEMP "riverlub-supervisor-smoke"
 New-Item -Path $root -ItemType Directory -Force | Out-Null
 
