@@ -138,6 +138,33 @@ fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+// Windows resource_dir() may return Win32 verbatim paths (\\?\C:\...).
+// They work for Windows file APIs but Node 22's JS module loader can fail with
+// EISDIR/lstat('C:') when the script and current_dir are passed verbatim.
+// Normalize only the well-defined local-drive and UNC forms before spawning
+// Node. Do not call canonicalize(): it creates verbatim paths on Windows.
+#[cfg(target_os = "windows")]
+fn node_compatible_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\'
+            && bytes[0].is_ascii_alphabetic()
+        {
+            return PathBuf::from(rest);
+        }
+        if let Some(unc) = rest.strip_prefix(r"UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn node_compatible_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 fn app_data_dir() -> PathBuf {
     if let Some(appdata) = env::var_os("APPDATA") {
         return PathBuf::from(appdata);
@@ -495,26 +522,28 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
             }
         }
     }
-    let entry = state.agent_dir.join("src").join("bootstrap.cjs");
+    let agent_dir = node_compatible_path(&state.agent_dir);
+    let node_command = node_compatible_path(Path::new(&state.node_command));
+    let entry = agent_dir.join("src").join("bootstrap.cjs");
     if !entry.exists() {
         return Err(format!("Agente nao encontrado em {}", display_path(&entry)));
     }
     write_supervisor_trace("spawn", &format!(
         "Node runtime={}, entry={}, cwd={}",
-        state.node_command,
+        display_path(&node_command),
         display_path(&entry),
-        display_path(&state.agent_dir)
+        display_path(&agent_dir)
     ));
-    let mut command = Command::new(&state.node_command);
+    let mut command = Command::new(&node_command);
     command
         .arg(&entry)
-        .current_dir(&state.agent_dir)
+        .current_dir(&agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .env("RIVERLUB_CONNECT_MANAGED", "1")
         .env("RIVERLUB_AGENT_RUNTIME_ORIGIN", &state.runtime_origin)
-        .env("RIVERLUB_AGENT_RUNTIME_DIR", display_path(&state.agent_dir));
+        .env("RIVERLUB_AGENT_RUNTIME_DIR", display_path(&agent_dir));
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
@@ -897,14 +926,14 @@ fn ensure_supervisor(app: &tauri::AppHandle) -> Result<(), String> {
     }
     let _ = cleanup_orphaned_runtime(&runtime);
     let exe = env::current_exe().map_err(|e| format!("Executavel atual indisponivel: {e}"))?;
-    let mut command = Command::new(exe);
+    let mut command = Command::new(node_compatible_path(&exe));
     command
         .arg("--riverlub-supervisor")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env("RIVERLUB_SUPERVISOR_NODE", &runtime.node_command)
-        .env("RIVERLUB_SUPERVISOR_AGENT_DIR", display_path(&agent_dir))
+        .env("RIVERLUB_SUPERVISOR_NODE", node_compatible_path(Path::new(&runtime.node_command)))
+        .env("RIVERLUB_SUPERVISOR_AGENT_DIR", node_compatible_path(&agent_dir))
         .env("RIVERLUB_SUPERVISOR_RUNTIME_ORIGIN", &runtime.runtime_origin);
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
