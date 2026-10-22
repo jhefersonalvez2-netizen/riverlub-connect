@@ -108,3 +108,6 @@ jobs:
       - name: Smoke test actual Rust Supervisor and Node agent
         shell: pwsh
         run: ./scripts/smoke-connect-supervisor.ps1
+      - name: Smoke test Node pre-bootstrap error capture
+        shell: pwsh
+        run: ./scripts/smoke-supervisor-error-log.ps1

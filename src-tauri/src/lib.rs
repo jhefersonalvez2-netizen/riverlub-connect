@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -407,6 +407,77 @@ fn close_job_handle(handle: isize) {
 #[cfg(not(target_os = "windows"))]
 fn close_job_handle(_handle: isize) {}
 
+fn write_supervisor_trace(kind: &str, detail: &str) {
+    let dir = agent_config_dir().join("logs");
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("supervisor.log");
+    if fs::metadata(&path).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = fs::rename(&path, dir.join("supervisor.log.old"));
+    }
+    let record = json!({
+        "timestamp_ms": now_ms(),
+        "event": kind,
+        "detail": detail.chars().take(900).collect::<String>()
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{record}");
+    }
+}
+
+// The agent can fail before index.js or bootstrap.cjs installs its logger.
+// Capture diagnostic error lines from Node stderr, never stdout (which may
+// contain the WhatsApp pairing QR). Redact potential credentials.
+#[cfg(target_os = "windows")]
+fn capture_node_startup_errors(stderr: std::process::ChildStderr) {
+    thread::spawn(move || {
+        let mut captured = 0usize;
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            let value = line.trim();
+            if value.is_empty() {
+                continue;
+            }
+            let lower = value.to_ascii_lowercase();
+            let reportable = lower.contains("error:")
+                || lower.contains("error [")
+                || lower.contains("module_not_found")
+                || lower.contains("cannot find module")
+                || lower.contains("node.js v");
+            let sensitive = lower.contains("bearer ")
+                || lower.contains("agenttoken")
+                || lower.contains("agent_token")
+                || lower.contains("qr_text")
+                || lower.contains("qr_data")
+                || lower.contains("data:image")
+                || lower.contains("secret")
+                || lower.contains("password");
+            if !reportable || sensitive || captured >= 20 {
+                continue;
+            }
+            let message = value.chars().take(500).collect::<String>();
+            let dir = agent_config_dir().join("logs");
+            if fs::create_dir_all(&dir).is_ok() {
+                let record = json!({
+                    "timestamp_ms": now_ms(),
+                    "level": "error",
+                    "message": "Node startup stderr",
+                    "detail": message
+                });
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("supervisor.log"))
+                {
+                    let _ = writeln!(file, "{record}");
+                }
+            }
+            captured += 1;
+        }
+    });
+}
+
 fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
     if let Some(child) = state.child.as_mut() {
         match child.child.try_wait() {
@@ -414,6 +485,7 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
             Ok(Some(status)) => {
                 state.last_exit_code = status.code();
                 state.last_exit_at_ms = Some(now_ms());
+                write_supervisor_trace("exit", &format!("Node exited with code {:?}", status.code()));
                 let handle = child.job_handle;
                 close_job_handle(handle);
                 state.child = None;
@@ -427,13 +499,19 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
     if !entry.exists() {
         return Err(format!("Agente nao encontrado em {}", display_path(&entry)));
     }
+    write_supervisor_trace("spawn", &format!(
+        "Node runtime={}, entry={}, cwd={}",
+        state.node_command,
+        display_path(&entry),
+        display_path(&state.agent_dir)
+    ));
     let mut command = Command::new(&state.node_command);
     command
         .arg(&entry)
         .current_dir(&state.agent_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .env("RIVERLUB_CONNECT_MANAGED", "1")
         .env("RIVERLUB_AGENT_RUNTIME_ORIGIN", &state.runtime_origin)
         .env("RIVERLUB_AGENT_RUNTIME_DIR", display_path(&state.agent_dir));
@@ -441,11 +519,19 @@ fn spawn_agent(state: &mut SupervisorState) -> Result<(), String> {
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Falha ao iniciar agente WhatsApp: {e}"))?;
+        .map_err(|e| {
+            write_supervisor_trace("spawn_error", &e.to_string());
+            format!("Falha ao iniciar agente WhatsApp: {e}")
+        })?;
     let pid = child.id();
+    #[cfg(target_os = "windows")]
+    if let Some(stderr) = child.stderr.take() {
+        capture_node_startup_errors(stderr);
+    }
     let job_handle = match create_kill_on_close_job(&child) {
         Ok(handle) => handle,
         Err(error) => {
+            write_supervisor_trace("job_error", &error);
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
@@ -552,6 +638,7 @@ fn supervisor_status(state: &mut SupervisorState) -> Value {
             Ok(Some(exit_status)) => {
                 state.last_exit_code = exit_status.code();
                 state.last_exit_at_ms = Some(now_ms());
+                write_supervisor_trace("exit", &format!("Node exited with code {:?}", exit_status.code()));
                 close_job_handle(managed.job_handle);
                 state.child = None;
             }
@@ -691,6 +778,7 @@ pub fn run_supervisor() {
             if let Some((exit_code, job_handle)) = exit {
                 guard.last_exit_code = exit_code;
                 guard.last_exit_at_ms = Some(now_ms());
+                write_supervisor_trace("exit", &format!("Node exited with code {exit_code:?}"));
                 close_job_handle(job_handle);
                 guard.child = None;
                 if guard.desired_running {
