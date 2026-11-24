@@ -52,6 +52,8 @@ jobs:
       - name: Verify WhatsApp auth and media fixes
         run: node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
 
+      - name: Verify browser launch, CDP and delayed Socket
+        run: node vendor/whatsapp-agent/patches/smoke-browser.cjs
       - name: Verify bundled agent version
         shell: powershell
         run: |
