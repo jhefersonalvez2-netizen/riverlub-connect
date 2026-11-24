@@ -30,6 +30,12 @@ jobs:
           node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
           node --check vendor/whatsapp-agent/src/index.js
           npm audit --omit=dev --json --prefix vendor/whatsapp-agent > /tmp/agent-audit.json || true
+      - name: Export resolved dependency lock for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: whatsapp-agent-resolved-lock
+          path: vendor/whatsapp-agent/package-lock.json
+          if-no-files-found: error
       - name: Enforce agent security policy
         shell: python
         run: |
@@ -100,11 +106,19 @@ jobs:
           npm install --package-lock-only --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
+      - name: Verify browser launch, CDP and delayed Socket
+        run: node vendor/whatsapp-agent/patches/smoke-browser.cjs
       - name: Smoke test bundled WhatsApp agent startup
         shell: pwsh
         run: ./scripts/smoke-whatsapp-agent.ps1
       - name: Build Windows installer
         run: npm run tauri:build
+      - name: Upload candidate Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: RiverLub-Connect-Windows-candidate
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
       - name: Smoke test actual Rust Supervisor and Node agent
         shell: pwsh
         run: ./scripts/smoke-connect-supervisor.ps1
