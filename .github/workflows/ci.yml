@@ -28,6 +28,7 @@ jobs:
           npm install --package-lock-only --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           npm ci --omit=dev --ignore-scripts --prefix vendor/whatsapp-agent
           node vendor/whatsapp-agent/patches/apply-media-id-fix.cjs
+          node -e 'const p=require("./vendor/whatsapp-agent/package-lock.json");console.log("RIVERLUB_WWEB_LOCK:"+JSON.stringify(p.packages["node_modules/whatsapp-web.js"]));'
           node --check vendor/whatsapp-agent/src/index.js
           npm audit --omit=dev --json --prefix vendor/whatsapp-agent > /tmp/agent-audit.json || true
       - name: Enforce agent security policy
